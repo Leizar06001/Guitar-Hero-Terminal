@@ -409,35 +409,7 @@ static void midi_extract_track_names(const uint8_t* data, size_t len, TrackNameV
   }
 }
 
-static uint8_t *slurp(const char *path, size_t *out_len) {
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    perror("fopen");
-    return NULL;
-  }
-  fseek(f, 0, SEEK_END);
-  long sz = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  if (sz <= 0) {
-    fclose(f);
-    return NULL;
-  }
-  uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-  if (!buf) {
-    perror("malloc");
-    fclose(f);
-    return NULL;
-  }
-  if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-    perror("fread");
-    free(buf);
-    fclose(f);
-    return NULL;
-  }
-  fclose(f);
-  *out_len = (size_t)sz;
-  return buf;
-}
+// parse_midi_file begins below
 static void parse_midi_notes_with_global_tempo(const uint8_t* data, size_t len, NoteVec* out_notes, int* out_tpqn) {
   TempoVec tempos = {0};
   int tpqn = 0;

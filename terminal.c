@@ -13,17 +13,6 @@
 #include <time.h>
 #include <unistd.h>
 
-// Helper to get single-char representation of a key
-static char key_char(SDL_Keycode key) {
-  if (key >= SDLK_a && key <= SDLK_z) {
-    return 'a' + (char)(key - SDLK_a);
-  }
-  if (key >= SDLK_0 && key <= SDLK_9) {
-    return '0' + (char)(key - SDLK_0);
-  }
-  return '?';
-}
-
 const char *lane_color(int lane) {
   switch (lane) {
   case 0:
@@ -116,9 +105,9 @@ void update_effects(double dt) {
 void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
                 double song_offset_ms, double global_offset_ms,
-                int selected_track,
-                const TrackNameVec *track_names,
-                const char *timing_feedback) {
+                int selected_track __attribute__((unused)),
+                const TrackNameVec *track_names __attribute__((unused)),
+                const char *timing_feedback, int inverted_mode) {
   int rows, cols;
   get_term_size(&rows, &cols);
   int h = rows - 3; // Account for: 1 stats line, 1 empty line, bottom margin
@@ -126,11 +115,16 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     h = 10;
 
   const int lanes = 5;
-  const int lane_w = 3; // [#]
+  const int lane_w = NOTE_WIDTH;
   int grid_w = lanes * lane_w;
   int x0 = (cols - grid_w) / 2;
   if (x0 < 0)
     x0 = 0;
+
+  // Helper to invert lane index when inverted mode is enabled
+  auto int invert_lane(int lane) {
+    return inverted_mode ? (4 - lane) : lane;
+  }
 
   // buffer
   char *screen = (char *)malloc((size_t)rows * (size_t)(cols + 1));
@@ -189,7 +183,7 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
   
   // Add multiplier text at bottom of bar
   if (hit_y + 1 < rows) {
-    char mult_text[8];
+    char mult_text[16];
     snprintf(mult_text, sizeof(mult_text), "%dx", multiplier);
     size_t mult_pos = (size_t)(hit_y + 1) * (size_t)(cols + 1);
     for (size_t i = 0; i < strlen(mult_text) && i < 3; i++) {
@@ -244,14 +238,6 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     }
   }
 
-  // Check for any active effects (to display graphical feedback on sides)
-  int active_effects[5] = {-1, -1, -1, -1, -1};
-  for (int e = 0; e < g_effect_count; e++) {
-    if (g_effects[e].lane >= 0 && g_effects[e].lane < 5) {
-      active_effects[g_effects[e].lane] = g_effects[e].type;
-    }
-  }
-  
   // Draw graphical feedback on LEFT side of lanes
   int left_x = x0 - 6;  // 6 chars to the left
   if (left_x >= 0 && hit_y >= 0 && hit_y < rows) {
@@ -404,36 +390,31 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
 
   // Fret buttons at hit line - show when frets are pressed (no effects here)
   for (int l = 0; l < lanes; l++) {
-    int x = x0 + l * lane_w;
-    if (x + 2 < cols && hit_y >= 0 && hit_y < rows) {
-      size_t pos0 = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(x + 0);
-      size_t pos1 = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(x + 1);
-      size_t pos2 = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(x + 2);
-
+    int display_lane = invert_lane(l);  // Invert for display
+    int x = x0 + display_lane * lane_w;
+    if (x + lane_w - 1 < cols && hit_y >= 0 && hit_y < rows) {
+      size_t row_pos = (size_t)hit_y * (size_t)(cols + 1);
+      
       if (held_mask & (1u << l)) {
         // Fret is pressed - show filled button with bright indicator
-        screen[pos0] = '<';
-        screen[pos1] = 'O'; // Capital O to indicate pressed
-        screen[pos2] = '>';
+        screen[row_pos + (size_t)x] = '<';
+        for (int i = 1; i < lane_w - 1; i++) {
+          screen[row_pos + (size_t)(x + i)] = 'O';
+        }
+        screen[row_pos + (size_t)(x + lane_w - 1)] = '>';
       } else {
         // Fret not pressed - show empty button
-        screen[pos0] = '[';
-        screen[pos1] = ' ';
-        screen[pos2] = ']';
+        screen[row_pos + (size_t)x] = '[';
+        for (int i = 1; i < lane_w - 1; i++) {
+          screen[row_pos + (size_t)(x + i)] = ' ';
+        }
+        screen[row_pos + (size_t)(x + lane_w - 1)] = ']';
       }
 
-      // Store positions for coloring
-      if (colored_count < 8192 - 3) {
+      // Store positions for coloring (use original lane for colors)
+      for (int i = 0; i < lane_w && colored_count < 8192; i++) {
         colored[colored_count].lane = l;
-        colored[colored_count].pos = pos0;
-        colored_count++;
-
-        colored[colored_count].lane = l;
-        colored[colored_count].pos = pos1;
-        colored_count++;
-
-        colored[colored_count].lane = l;
-        colored[colored_count].pos = pos2;
+        colored[colored_count].pos = row_pos + (size_t)(x + i);
         colored_count++;
       }
     }
@@ -441,7 +422,7 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
 
   // Add timing feedback next to fret line
   if (timing_feedback && timing_feedback[0] != '\0') {
-    int feedback_x = x0 + grid_w + 3;  // 3 spaces after fret buttons
+    int feedback_x = x0 + grid_w + 10;  // 10 spaces after fret buttons (moved further right)
     const char *feedback_str = timing_feedback;
     int feedback_len = (int)strlen(feedback_str);
     
@@ -473,7 +454,8 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
 
   for (int y = top_y; y < hit_y; y++) {
     for (int l = 0; l < lanes; l++) {
-      int x = x0 + l * lane_w;
+      int display_lane = invert_lane(l);  // Invert for display
+      int x = x0 + display_lane * lane_w;
       if (x >= 0 && x < cols) {
         size_t pos = (size_t)y * (size_t)(cols + 1) + (size_t)x;
         screen[pos] = '|';
@@ -546,7 +528,8 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         // Draw trail from sustain end down to note head
         for (int l = 0; l < lanes; l++) {
           if (m & (1u << l)) {
-            int x = x0 + l * lane_w + 1;  // Center of lane
+            int display_lane = invert_lane(l);  // Invert for display
+            int x = x0 + display_lane * lane_w + (lane_w / 2);  // Center of lane
             
             // Draw trail from sustain end (top) to note head (bottom)
             for (int trail_y = trail_start; trail_y <= trail_end; trail_y++) {
@@ -570,33 +553,30 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     // Draw note heads on top of trails
     for (int l = 0; l < lanes; l++) {
       if (m & (1u << l)) {
-        int x = x0 + l * lane_w;
-        if (x + 2 < cols && y >= 0 && y < rows) {
-          size_t pos0 = (size_t)y * (size_t)(cols + 1) + (size_t)(x + 0);
-          size_t pos1 = (size_t)y * (size_t)(cols + 1) + (size_t)(x + 1);
-          size_t pos2 = (size_t)y * (size_t)(cols + 1) + (size_t)(x + 2);
+        int display_lane = invert_lane(l);  // Invert for display
+        int x = x0 + display_lane * lane_w;
+        if (x + lane_w - 1 < cols && y >= 0 && y < rows) {
+          size_t row_pos = (size_t)y * (size_t)(cols + 1);
           
           // HOPO notes use <*> instead of [#]
           if (is_hopo) {
-            screen[pos0] = '<';
-            screen[pos1] = '*';
-            screen[pos2] = '>';
+            screen[row_pos + (size_t)x] = '<';
+            for (int i = 1; i < lane_w - 1; i++) {
+              screen[row_pos + (size_t)(x + i)] = '*';
+            }
+            screen[row_pos + (size_t)(x + lane_w - 1)] = '>';
           } else {
-            screen[pos0] = '[';
-            screen[pos1] = '#';
-            screen[pos2] = ']';
+            screen[row_pos + (size_t)x] = '[';
+            for (int i = 1; i < lane_w - 1; i++) {
+              screen[row_pos + (size_t)(x + i)] = '#';
+            }
+            screen[row_pos + (size_t)(x + lane_w - 1)] = ']';
           }
 
           // Store positions and lane for coloring (notes are brighter/bolder)
-          if (colored_count < 8192 - 3) {
+          for (int i = 0; i < lane_w && colored_count < 8192; i++) {
             colored[colored_count].lane = l;
-            colored[colored_count].pos = pos0;
-            colored_count++;
-            colored[colored_count].lane = l;
-            colored[colored_count].pos = pos1;
-            colored_count++;
-            colored[colored_count].lane = l;
-            colored[colored_count].pos = pos2;
+            colored[colored_count].pos = row_pos + (size_t)(x + i);
             colored_count++;
           }
         }

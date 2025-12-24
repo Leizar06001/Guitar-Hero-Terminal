@@ -11,6 +11,8 @@ typedef struct {
   SDL_Keycode key_fret_orange;
   SDL_Keycode key_strum;
   double global_offset_ms;  // Global offset for all songs
+  int inverted_mode;  // Invert high/low notes and keys
+  double lookahead_sec;  // How far ahead notes are visible (in seconds)
 } Settings;
 
 void settings_load(Settings *s);

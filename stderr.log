@@ -1,0 +1,16 @@
+Creating SDL window for input...
+
+[1;36mComing in Summer, 2008: Accordion Hero![0m
+
+Parsing MIDI: Songs/Danzig (WaveGroup) - Mother (Late 2006 Retail Demo) (Harmonix)/notes.mid
+Auto-selected track: PART GUITAR (track 2)
+Found 633 chords for difficulty expert
+Loading 2 Opus files...
+  [1/2] Songs/Danzig (WaveGroup) - Mother (Late 2006 Retail Demo) (Harmonix)/guitar.opus
+  -> Detected as player track (dynamic volume)
+  [2/2] Songs/Danzig (WaveGroup) - Mother (Late 2006 Retail Demo) (Harmonix)/song.opus
+
+Press [0;96mENTER[0m to start, or Q/ESC to quit.
+[0;93mFocus the SDL window if needed.[0m
+[audio] started
+[audio] paused

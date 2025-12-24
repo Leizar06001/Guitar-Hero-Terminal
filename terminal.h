@@ -38,6 +38,6 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
                 double song_offset_ms, double global_offset_ms, 
                 int selected_track, const TrackNameVec *track_names,
-                const char *timing_feedback);
+                const char *timing_feedback, int inverted_mode);
 
 #endif

@@ -15,6 +15,8 @@ void settings_init_defaults(Settings *s) {
   s->key_fret_orange = KEY_FRET_ORANGE;
   s->key_strum = KEY_STRUM_DOWN;
   s->global_offset_ms = DEFAULT_OFFSET;
+  s->inverted_mode = 0;
+  s->lookahead_sec = DEFAULT_LOOKAHEAD;
 }
 
 static const char* get_settings_path(void) {
@@ -57,6 +59,11 @@ void settings_load(Settings *s) {
     } else if (sscanf(line, "offset_ms=%lf", &dvalue) == 1) {
       // Legacy compatibility
       s->global_offset_ms = dvalue;
+    } else if (sscanf(line, "inverted_mode=%d", &value) == 1) {
+      s->inverted_mode = value;
+    } else if (sscanf(line, "lookahead_sec=%lf", &dvalue) == 1) {
+      s->lookahead_sec = dvalue;
+      if (s->lookahead_sec < MIN_LOOKAHEAD) s->lookahead_sec = MIN_LOOKAHEAD;
     }
   }
   
@@ -76,8 +83,10 @@ void settings_save(const Settings *s) {
   fprintf(f, "key_fret_yellow=%d\n", s->key_fret_yellow);
   fprintf(f, "key_fret_blue=%d\n", s->key_fret_blue);
   fprintf(f, "key_fret_orange=%d\n", s->key_fret_orange);
+  fprintf(f, "lookahead_sec=%.2f\n", s->lookahead_sec);
   fprintf(f, "key_strum=%d\n", s->key_strum);
   fprintf(f, "global_offset_ms=%.1f\n", s->global_offset_ms);
+  fprintf(f, "inverted_mode=%d\n", s->inverted_mode);
   
   fclose(f);
 }

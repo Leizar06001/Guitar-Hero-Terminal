@@ -30,5 +30,7 @@ double audio_time_sec(const AudioEngine *e);
 void audio_cb(void *userdata, Uint8 *stream, int len);
 void load_opus_file(const char *path, Stem *stem);
 void audio_init(AudioEngine *e, int sample_rate);
+void audio_start(AudioEngine *e);
+void audio_reset(AudioEngine *e);
 
 #endif

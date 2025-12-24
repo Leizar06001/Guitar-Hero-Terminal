@@ -7,6 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+// Debug: Track callback timing
+static FILE *debug_log = NULL;
+static struct timespec debug_start_time = {0};
+static struct timespec debug_last_log_time = {0};
+static uint64_t debug_callback_count = 0;
+static uint64_t debug_last_callback_count = 0;
 
 static inline float clamp1(float x) {
   if (x < -1.0f) return -1.0f;
@@ -19,6 +27,27 @@ void audio_cb(void *userdata, Uint8 *stream, int len) {
   float *out = (float *)stream;
   int frames = len / (int)(sizeof(float) * e->channels);
 
+  // Debug: Log callback timing periodically
+  if (debug_log && e->started && debug_callback_count % 20 == 0) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed = (now.tv_sec - debug_start_time.tv_sec) + 
+                     (now.tv_nsec - debug_start_time.tv_nsec) / 1e9;
+    double since_last = (now.tv_sec - debug_last_log_time.tv_sec) + 
+                        (now.tv_nsec - debug_last_log_time.tv_nsec) / 1e9;
+    uint64_t cb_delta = debug_callback_count - debug_last_callback_count;
+    double cb_rate = (since_last > 0) ? (cb_delta / since_last) : 0.0;
+    
+    fprintf(debug_log, "CB#%lu: %.3fs real, %.3fs interval, rate=%.1f CB/s, frames_played=%lu (%.3fs audio)\n",
+            debug_callback_count, elapsed, since_last, cb_rate, e->frames_played,
+            (double)e->frames_played / (double)e->sample_rate);
+    fflush(debug_log);
+    
+    debug_last_log_time = now;
+    debug_last_callback_count = debug_callback_count;
+  }
+  debug_callback_count++;
+
   if (!e->started) {
     memset(stream, 0, (size_t)len);
     return;
@@ -30,8 +59,6 @@ void audio_cb(void *userdata, Uint8 *stream, int len) {
       Stem *s = &e->stems[i];
       if (!s->enabled || !s->pcm)
         continue;
-      if (s->pos >= s->frames)
-        continue;
       
       // Very fast gain transition for immediate player feedback
       if (s->gain < s->target_gain) {
@@ -42,9 +69,13 @@ void audio_cb(void *userdata, Uint8 *stream, int len) {
         if (s->gain < s->target_gain) s->gain = s->target_gain;
       }
       
-      uint64_t idx = s->pos * 2;
-      L += s->pcm[idx + 0] * s->gain;
-      R += s->pcm[idx + 1] * s->gain;
+      // Only read audio if position is valid, but ALWAYS advance position
+      if (s->pos < s->frames) {
+        uint64_t idx = s->pos * 2;
+        L += s->pcm[idx + 0] * s->gain;
+        R += s->pcm[idx + 1] * s->gain;
+      }
+      // Always increment position to keep all stems synchronized
       s->pos++;
     }
     out[f * 2 + 0] = clamp1(L);
@@ -183,5 +214,45 @@ void audio_init(AudioEngine *e, int sample_rate) {
   }
   e->sample_rate = have.freq;
   e->buffer_size = have.samples;
+  // Keep audio paused until stems are loaded
+  SDL_PauseAudioDevice(e->dev, 1);
+}
+
+void audio_start(AudioEngine *e) {
+  // Initialize debug logging
+  debug_log = fopen("/tmp/midifall_audio_debug.log", "w");
+  if (debug_log) {
+    clock_gettime(CLOCK_MONOTONIC, &debug_start_time);
+    debug_last_log_time = debug_start_time;
+    debug_callback_count = 0;
+    debug_last_callback_count = 0;
+    fprintf(debug_log, "Audio debug started\n");
+    fflush(debug_log);
+  }
+  
+  e->started = 1;
   SDL_PauseAudioDevice(e->dev, 0);
+}
+
+void audio_reset(AudioEngine *e) {
+  // Pause audio callback to safely reset state
+  SDL_LockAudioDevice(e->dev);
+  
+  // Reset all stem positions and frames_played
+  for (int i = 0; i < e->stem_count; i++) {
+    e->stems[i].pos = 0;
+  }
+  e->frames_played = 0;
+  
+  SDL_UnlockAudioDevice(e->dev);
+  
+  // Log the reset
+  if (debug_log) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed = (now.tv_sec - debug_start_time.tv_sec) + 
+                     (now.tv_nsec - debug_start_time.tv_nsec) / 1e9;
+    fprintf(debug_log, "RESET at %.3fs real time\n", elapsed);
+    fflush(debug_log);
+  }
 }

@@ -6,7 +6,7 @@
 /* ==================== Game Configuration ==================== */
 
 /* Default timing offset in milliseconds (negative = notes appear earlier) */
-#define DEFAULT_OFFSET -770
+#define DEFAULT_OFFSET -360
 
 /* Default difficulty level */
 #define DEFAULT_DIFFICULTY "expert"
@@ -18,12 +18,18 @@
 /* Target frame rate */
 #define TARGET_FPS 60.0
 
+/* Performance tracking window size (for sound reaction) */
+#define PERF_WINDOW 3  // Very small window = very fast reaction
+
+/* Consecutive misses before lowering guitar volume */
+#define CONSECUTIVE_MISS_THRESHOLD 2  // Lower guitar volume after 3 consecutive misses
+
 /* ==================== Timing Windows ==================== */
 
 /* Hit timing windows in seconds */
 #define TIMING_PERFECT 0.030  // 30ms - perfect hit
 #define TIMING_GOOD    0.055  // 55ms - good hit
-#define TIMING_BAD     0.100  // 100ms - acceptable hit
+#define TIMING_BAD     0.120  // 100ms - acceptable hit
 
 /* Points awarded for each timing quality */
 #define POINTS_PERFECT 100
@@ -72,7 +78,7 @@
 /* ==================== Audio Configuration ==================== */
 
 /* SDL audio buffer size in frames (affects latency) */
-#define AUDIO_BUFFER_SIZE 256  // Options: 256, 512, 1024
+#define AUDIO_BUFFER_SIZE 256  // Increased for WSL2 thread scheduling tolerance
 
 /* Audio sample rate (Opus is 48kHz) */
 #define AUDIO_SAMPLE_RATE 48000
@@ -111,8 +117,9 @@
 /* Number of lanes */
 #define NUM_LANES 5
 
-/* Lane width in characters */
-#define LANE_WIDTH 3
+/* Lane width in characters (how wide each note is) */
+#define NOTE_WIDTH 5  // Width of each note (e.g., 5 = [###], 7 = [#####])
+#define LANE_WIDTH NOTE_WIDTH
 
 /* Minimum gameplay area height */
 #define MIN_GAMEPLAY_HEIGHT 10
@@ -161,6 +168,7 @@
 #define SDL_WINDOW_HEIGHT 1
 
 /* Preferred video driver for WSL */
+// x11, Wayland
 #define SDL_VIDEO_DRIVER "x11"
 
 #endif

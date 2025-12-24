@@ -1,6 +1,9 @@
 #define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
+// Disable format-truncation warnings - our buffers are PATH_MAX sized
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include "config.h"
 #include "audio.h"
 #include "midi.h"
@@ -22,12 +25,12 @@
 #include <unistd.h>
 
 typedef struct {
-  char path[512];
-  char title[128];
+  char path[4096];
+  char title[256];
   char artist[128];
   char year[16];
   int diff_guitar;  // Guitar difficulty level (0-10+)
-  char loading_phrase[128];  // Loading phrase from ini
+  char loading_phrase[256];  // Loading phrase from ini
 } SongEntry;
 
 typedef enum {
@@ -44,6 +47,8 @@ typedef enum {
   OPT_KEY_ORANGE,
   OPT_KEY_STRUM,
   OPT_OFFSET,
+  OPT_LOOKAHEAD,
+  OPT_INVERTED,
   OPT_BACK,
   OPT_COUNT
 } OptionItem;
@@ -71,7 +76,7 @@ static void draw_menu(MenuState menu, int selection, int waiting_for_key, const 
   } else if (menu == MENU_OPTIONS) {
     const char *key_names[] = {
       "Green Fret", "Red Fret", "Yellow Fret", "Blue Fret", "Orange Fret",
-      "Strum", "Offset (ms)", "Back"
+      "Strum", "Offset (ms)", "Lookahead (sec)", "Inverted Mode", "Back"
     };
     
     printf("\x1b[1;37m╔═══════════════════════════╗\x1b[0m\n");
@@ -84,6 +89,10 @@ static void draw_menu(MenuState menu, int selection, int waiting_for_key, const 
       
       if (i == OPT_OFFSET) {
         printf("%s%s: %.0f%s\n", prefix, key_names[i], settings->global_offset_ms, suffix);
+      } else if (i == OPT_LOOKAHEAD) {
+        printf("%s%s: %.2f%s\n", prefix, key_names[i], settings->lookahead_sec, suffix);
+      } else if (i == OPT_INVERTED) {
+        printf("%s%s: %s%s\n", prefix, key_names[i], settings->inverted_mode ? "ON" : "OFF", suffix);
       } else if (i == OPT_BACK) {
         printf("\n%s%s%s\n", prefix, key_names[i], suffix);
       } else {
@@ -105,6 +114,10 @@ static void draw_menu(MenuState menu, int selection, int waiting_for_key, const 
       printf("\n\x1b[1;32mPress new key...\x1b[0m\n");
     } else if (selection == OPT_OFFSET) {
       printf("\n\x1b[90mUse +/- to adjust, Enter to confirm\x1b[0m\n");
+    } else if (selection == OPT_LOOKAHEAD) {
+      printf("\n\x1b[90mUse +/- to adjust (0.1s steps), Enter to confirm\x1b[0m\n");
+    } else if (selection == OPT_INVERTED) {
+      printf("\n\x1b[90mPress Enter to toggle\x1b[0m\n");
     } else if (selection < OPT_BACK) {
       printf("\n\x1b[90mPress Enter to rebind key\x1b[0m\n");
     } else {
@@ -205,7 +218,7 @@ static int parse_song_ini(const char *ini_path, char *title, char *artist, char 
 
 // Parse hopo_frequency from song.ini
 static int parse_hopo_from_ini(const char *song_dir) {
-  char ini_path[512];
+  char ini_path[4096];
   snprintf(ini_path, sizeof(ini_path), "%s/song.ini", song_dir);
   
   FILE *f = fopen(ini_path, "r");
@@ -248,14 +261,14 @@ static int scan_songs_directory(const char *songs_dir, SongEntry **out_songs) {
   while ((ent = readdir(dir)) != NULL) {
     if (ent->d_name[0] == '.') continue;
     
-    char song_path[512];
+    char song_path[4096];
     snprintf(song_path, sizeof(song_path), "%s/%s", songs_dir, ent->d_name);
     
     struct stat st;
     if (stat(song_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
     
     // Check for required files
-    char ini_path[512], notes_path[512];
+    char ini_path[4096], notes_path[2048];
     snprintf(ini_path, sizeof(ini_path), "%s/song.ini", song_path);
     
     // Check for notes.chart or notes.mid
@@ -311,8 +324,7 @@ static int scan_songs_directory(const char *songs_dir, SongEntry **out_songs) {
     if (!parse_song_ini(ini_path, songs[count].title, songs[count].artist, songs[count].year,
                         &songs[count].diff_guitar, songs[count].loading_phrase)) {
       // Use folder name as fallback
-      strncpy(songs[count].title, ent->d_name, 127);
-      songs[count].title[127] = '\0';
+      snprintf(songs[count].title, sizeof(songs[count].title), "%s", ent->d_name);
       songs[count].artist[0] = '\0';
       songs[count].year[0] = '\0';
       songs[count].diff_guitar = 0;
@@ -413,7 +425,7 @@ static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
         printf("\x1b[1;36m╚═══════════════════════════════════════════════════════════════════════════════════════════╝\x1b[0m\n");
         
         // Display album artwork using chafa
-        char album_path[512];
+        char album_path[4096];
         snprintf(album_path, sizeof(album_path), "%s/album.jpg", songs[selected].path);
         
         // Check if album artwork exists
@@ -423,13 +435,31 @@ static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
           
           printf("\n");  // Blank line before artwork
           
+          // Get terminal size to adapt album artwork
+          int term_rows, term_cols;
+          get_term_size(&term_rows, &term_cols);
+          
+          // Calculate album art size (use half the width, limit height to available space)
+          // Reserve space for: 25 rows for song list + header + footer + controls
+          int available_rows = term_rows - 28;
+          if (available_rows < 10) available_rows = 10;  // Minimum size
+          if (available_rows > 40) available_rows = 40;  // Maximum size
+          
+          int art_cols = term_cols / 2;
+          if (art_cols < 30) art_cols = 30;
+          if (art_cols > 80) art_cols = 80;
+          
+          // Format size string
+          char size_str[32];
+          snprintf(size_str, sizeof(size_str), "%dx%d", art_cols, available_rows);
+          
           // Use fork/exec to avoid shell escaping issues
           pid_t pid = fork();
           if (pid == 0) {
             // Child process
             char *args[] = {
               "chafa",
-              "--size", "35x20",
+              "--size", size_str,
               "--colors", "256",
               album_path,
               NULL
@@ -510,15 +540,29 @@ static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
           need_redraw = 1;
         } else if (option_selection == OPT_OFFSET) {
           // Offset adjusted with +/-
+        } else if (option_selection == OPT_LOOKAHEAD) {
+          // Lookahead adjusted with +/-
         } else {
           waiting_for_key = 1;
           need_redraw = 1;
         }
       } else if ((c == '+' || c == '=') && option_selection == OPT_OFFSET) {
         settings->global_offset_ms += OFFSET_STEP;
+        settings_save(settings);
         need_redraw = 1;
       } else if (c == '-' && option_selection == OPT_OFFSET) {
         settings->global_offset_ms -= OFFSET_STEP;
+        settings_save(settings);
+        need_redraw = 1;
+      } else if ((c == '+' || c == '=') && option_selection == OPT_LOOKAHEAD) {
+        settings->lookahead_sec += 0.1;
+        if (settings->lookahead_sec > 5.0) settings->lookahead_sec = 5.0;  // Max 5 seconds
+        settings_save(settings);
+        need_redraw = 1;
+      } else if (c == '-' && option_selection == OPT_LOOKAHEAD) {
+        settings->lookahead_sec -= 0.1;
+        if (settings->lookahead_sec < MIN_LOOKAHEAD) settings->lookahead_sec = MIN_LOOKAHEAD;
+        settings_save(settings);
         need_redraw = 1;
       }
       continue;
@@ -705,199 +749,8 @@ static int find_max_track(const NoteVec *notes) {
   return max_track;
 }
 
-static float gain_for(const Args *a, const char *stem_name) {
-  for (int i = 0; i < a->gain_count; i++) {
-    if (strcmp(a->gains[i].name, stem_name) == 0)
-      return a->gains[i].gain;
-  }
-  return 1.0f;
-}
 
-static int muted(const Args *a, const char *stem_name) {
-  for (int i = 0; i < a->mute_count; i++) {
-    if (strcmp(a->mutes[i], stem_name) == 0)
-      return 1;
-  }
-  return 0;
-}
-
-static void scan_directory(const char *dir_path, char **out_midi, char **out_opus, int *out_opus_count) {
-  DIR *dir = opendir(dir_path);
-  if (!dir) {
-    fprintf(stderr, "Cannot open directory: %s\n", dir_path);
-    exit(1);
-  }
-
-  struct dirent *entry;
-  while ((entry = readdir(dir)) != NULL) {
-    if (entry->d_name[0] == '.') continue;
-    
-    char *full_path = (char *)malloc(strlen(dir_path) + strlen(entry->d_name) + 2);
-    sprintf(full_path, "%s/%s", dir_path, entry->d_name);
-    
-    struct stat st;
-    if (stat(full_path, &st) == 0 && S_ISREG(st.st_mode)) {
-      size_t len = strlen(entry->d_name);
-      if (len > 4 && strcmp(entry->d_name + len - 4, ".mid") == 0) {
-        *out_midi = full_path;
-      } else if (len > 5 && strcmp(entry->d_name + len - 5, ".opus") == 0) {
-        if (*out_opus_count < 16) {
-          out_opus[(*out_opus_count)++] = full_path;
-        } else {
-          fprintf(stderr, "Warning: Too many .opus files (max 16), skipping: %s\n", entry->d_name);
-          free(full_path);
-        }
-      } else {
-        free(full_path);
-      }
-    } else {
-      free(full_path);
-    }
-  }
-  closedir(dir);
-}
-
-static void usage(const char *prog) {
-  fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "  %s <folder>  [options]\n", prog);
-  fprintf(stderr, "  %s <file.mid> --opus <file1.opus> [--opus <file2.opus> ...] [options]\n\n", prog);
-  fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  --difficulty <easy|medium|hard|expert>\n");
-  fprintf(stderr, "  --offset-ms <N>\n");
-  fprintf(stderr, "  --lookahead-sec <S>\n");
-  fprintf(stderr, "  --gain <name=val>\n");
-  fprintf(stderr, "  --mute <name>\n");
-  exit(1);
-}
-
-static void parse_args(int argc, char **argv, Args *a) {
-  memset(a, 0, sizeof(*a));
-  a->diff_str = DEFAULT_DIFFICULTY;
-  a->offset_ms = DEFAULT_OFFSET;
-  a->lookahead = DEFAULT_LOOKAHEAD;
-
-  if (argc < 2) usage(argv[0]);
-
-  struct stat st;
-  if (stat(argv[1], &st) == 0 && S_ISDIR(st.st_mode)) {
-    a->needs_free = 1;
-    scan_directory(argv[1], &a->midi_path, a->opus_paths, &a->opus_count);
-    
-    if (!a->midi_path) {
-      fprintf(stderr, "No .mid file found in directory: %s\n", argv[1]);
-      exit(1);
-    }
-    if (a->opus_count == 0) {
-      fprintf(stderr, "No .opus files found in directory: %s\n", argv[1]);
-      exit(1);
-    }
-    
-    // Parse HOPO frequency from song.ini
-    a->hopo_frequency = parse_hopo_from_ini(argv[1]);
-
-    for (int i = 2; i < argc; i++) {
-      if (strcmp(argv[i], "--difficulty") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->diff_str = argv[++i];
-      } else if (strcmp(argv[i], "--offset-ms") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->offset_ms = atof(argv[++i]);
-      } else if (strcmp(argv[i], "--lookahead-sec") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->lookahead = atof(argv[++i]);
-        if (a->lookahead < MIN_LOOKAHEAD)
-          a->lookahead = MIN_LOOKAHEAD;
-      } else if (strcmp(argv[i], "--gain") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        if (a->gain_count >= 16) {
-          fprintf(stderr, "Too many --gain\n");
-          exit(1);
-        }
-        const char *spec = argv[++i];
-        const char *eq = strchr(spec, '=');
-        if (!eq) {
-          fprintf(stderr, "--gain expects name=val\n");
-          exit(1);
-        }
-        size_t n = (size_t)(eq - spec);
-        if (n >= sizeof(a->gains[a->gain_count].name))
-          n = sizeof(a->gains[a->gain_count].name) - 1;
-        memcpy(a->gains[a->gain_count].name, spec, n);
-        a->gains[a->gain_count].name[n] = '\0';
-        a->gains[a->gain_count].gain = (float)atof(eq + 1);
-        a->gain_count++;
-      } else if (strcmp(argv[i], "--mute") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        if (a->mute_count >= 16) {
-          fprintf(stderr, "Too many --mute\n");
-          exit(1);
-        }
-        snprintf(a->mutes[a->mute_count++], 32, "%s", argv[++i]);
-      } else {
-        usage(argv[0]);
-      }
-    }
-  } else {
-    a->midi_path = argv[1];
-    a->hopo_frequency = 170;  // Default for file mode
-
-    for (int i = 2; i < argc; i++) {
-      if (strcmp(argv[i], "--opus") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        if (a->opus_count >= 16) {
-          fprintf(stderr, "Too many --opus\n");
-          exit(1);
-        }
-        a->opus_paths[a->opus_count++] = argv[++i];
-      } else if (strcmp(argv[i], "--difficulty") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->diff_str = argv[++i];
-      } else if (strcmp(argv[i], "--offset-ms") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->offset_ms = atof(argv[++i]);
-      } else if (strcmp(argv[i], "--lookahead-sec") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        a->lookahead = atof(argv[++i]);
-        if (a->lookahead < MIN_LOOKAHEAD)
-          a->lookahead = MIN_LOOKAHEAD;
-      } else if (strcmp(argv[i], "--gain") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        if (a->gain_count >= 16) {
-          fprintf(stderr, "Too many --gain\n");
-          exit(1);
-        }
-        const char *spec = argv[++i];
-        const char *eq = strchr(spec, '=');
-        if (!eq) {
-          fprintf(stderr, "--gain expects name=val\n");
-          exit(1);
-        }
-        size_t n = (size_t)(eq - spec);
-        if (n >= sizeof(a->gains[a->gain_count].name))
-          n = sizeof(a->gains[a->gain_count].name) - 1;
-        memcpy(a->gains[a->gain_count].name, spec, n);
-        a->gains[a->gain_count].name[n] = '\0';
-        a->gains[a->gain_count].gain = (float)atof(eq + 1);
-        a->gain_count++;
-      } else if (strcmp(argv[i], "--mute") == 0) {
-        if (i + 1 >= argc) usage(argv[0]);
-        if (a->mute_count >= 16) {
-          fprintf(stderr, "Too many --mute\n");
-          exit(1);
-        }
-        snprintf(a->mutes[a->mute_count++], 32, "%s", argv[++i]);
-      } else {
-        usage(argv[0]);
-      }
-    }
-
-    if (a->opus_count == 0) {
-      fprintf(stderr, "Need at least one --opus file.\n");
-      exit(1);
-    }
-  }
-}
-
+// Scan for songs function starts on next line
 int main(int argc, char **argv) {
   (void)argc;  // Unused
   (void)argv;  // Unused
@@ -947,7 +800,7 @@ select_song:
   }
   
   // Get song info - copy before freeing songs
-  char song_path[512];
+  char song_path[4096];
   char loading_phrase[128];
   strncpy(song_path, songs[selected].path, sizeof(song_path) - 1);
   song_path[511] = '\0';
@@ -959,7 +812,9 @@ select_song:
   
   free(songs);  // Done with songs list
   
+  // Prefer WSLg backends: Wayland video, PulseAudio audio
   SDL_setenv("SDL_VIDEODRIVER", SDL_VIDEO_DRIVER, 1);
+  SDL_setenv("SDL_AUDIODRIVER", "pulse", 1);
   
   if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
     fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -997,7 +852,7 @@ select_song:
   }
 
   // Load song files from selected folder
-  char notes_path[512];
+  char notes_path[4096];
   char *opus_paths[16];
   int opus_count = 0;
   int is_chart = 0;
@@ -1130,6 +985,7 @@ select_song:
   atexit(show_cursor);
   atexit(term_raw_off);
 
+  // Idle loop before game start; keep minimal work
   while (1) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -1151,17 +1007,17 @@ select_song:
   }
 
 start_game:
-  for (int i = 0; i < aud.stem_count; i++)
-    aud.stems[i].pos = 0;
-  aud.frames_played = 0;
+  audio_reset(&aud);
+  audio_start(&aud);
   aud.started = 1;
+  fprintf(stderr, "[audio] started\n");
 
   // Load song-specific offset from song.ini
   double song_offset_ms = song_offset_load(song_path);
   double global_offset_ms = settings.global_offset_ms;
   double total_offset_ms = global_offset_ms + song_offset_ms;
   
-  const double lookahead = DEFAULT_LOOKAHEAD;
+  double lookahead = settings.lookahead_sec;
   const double perfect = TIMING_PERFECT;
   const double good = TIMING_GOOD;
   const double bad = TIMING_BAD;
@@ -1173,9 +1029,7 @@ start_game:
   int waiting_for_key = 0;
   
   // Performance tracking for dynamic guitar volume
-  #define PERF_WINDOW 5  // Very small window = very fast reaction
-  int recent_notes[PERF_WINDOW] = {1, 1, 1, 1, 1};  // Start optimistic - assume all hits
-  int perf_idx = 0;
+  int consecutive_misses = 0;  // Track consecutive misses
   
   char timing_feedback[32] = "";
   double feedback_timer = 0.0;
@@ -1186,33 +1040,21 @@ start_game:
   const double dt = 1.0 / fps;
   double next = now_sec();
   
-  // Helper to update guitar volume based on performance
+  // Helper to update guitar volume based on consecutive misses
   auto void update_guitar_volume() {
     if (guitar_stem_idx < 0) return;
     
-    int hits = 0;
-    for (int i = 0; i < PERF_WINDOW; i++) {
-      hits += recent_notes[i];
-    }
-    
-    float hit_rate = (float)hits / (float)PERF_WINDOW;
-    
-    // Very reactive: 60% for full volume, <40% for quiet
     float target;
-    if (hit_rate >= 0.6f) {
-      target = 1.0f;  // Full volume - 3/5 hits
-    } else if (hit_rate < 0.4f) {
-      target = 0.1f;  // Quiet - less than 2/5 hits
+    if (consecutive_misses >= CONSECUTIVE_MISS_THRESHOLD) {
+      target = 0.1f;  // Quiet after consecutive misses
     } else {
-      // Linear interpolation between 0.1 and 1.0 (40%-60% range)
-      target = 0.1f + (hit_rate - 0.4f) / 0.2f * 0.9f;
+      target = 1.0f;  // Full volume
     }
     
     aud.stems[guitar_stem_idx].target_gain = target;
   }
 
   while (1) {
-    (void)now_sec();
 
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -1256,8 +1098,10 @@ start_game:
               menu_selection = 2;
             } else {
               menu_state = MENU_NONE;
-              aud.started = 1;
-              clear_screen_hide_cursor();
+                  aud.started = 1;
+                  fprintf(stderr, "[audio] resumed\n");
+                  clear_screen_hide_cursor();
+
             }
             draw_menu(menu_state, menu_selection, 0, &settings);
             continue;
@@ -1290,9 +1134,7 @@ start_game:
                   break;
                 case 1:  // Restart
                   // Restart - reset everything and jump to start_game
-                  for (int i = 0; i < aud.stem_count; i++)
-                    aud.stems[i].pos = 0;
-                  aud.frames_played = 0;
+                  audio_reset(&aud);
                   cursor = 0;
                   st.score = 0;
                   st.streak = 0;
@@ -1349,8 +1191,15 @@ start_game:
                 menu_selection = 2;
                 settings_save(&settings);
                 total_offset_ms = settings.global_offset_ms + song_offset_ms;
+                lookahead = settings.lookahead_sec;
               } else if (menu_selection == OPT_OFFSET) {
                 // Offset is adjusted with +/-, not Enter
+              } else if (menu_selection == OPT_LOOKAHEAD) {
+                // Lookahead is adjusted with +/-, not Enter
+              } else if (menu_selection == OPT_INVERTED) {
+                // Toggle inverted mode
+                settings.inverted_mode = !settings.inverted_mode;
+                settings_save(&settings);
               } else {
                 waiting_for_key = 1;
               }
@@ -1363,12 +1212,33 @@ start_game:
             if (key == SDLK_PLUS || key == SDLK_EQUALS || key == SDLK_KP_PLUS) {
               settings.global_offset_ms += OFFSET_STEP;
               total_offset_ms = settings.global_offset_ms + song_offset_ms;
+              settings_save(&settings);
               draw_menu(menu_state, menu_selection, 0, &settings);
               continue;
             }
             if (key == SDLK_MINUS || key == SDLK_UNDERSCORE || key == SDLK_KP_MINUS) {
               settings.global_offset_ms -= OFFSET_STEP;
               total_offset_ms = settings.global_offset_ms + song_offset_ms;
+              settings_save(&settings);
+              draw_menu(menu_state, menu_selection, 0, &settings);
+              continue;
+            }
+          }
+          
+          if (menu_state == MENU_OPTIONS && menu_selection == OPT_LOOKAHEAD) {
+            if (key == SDLK_PLUS || key == SDLK_EQUALS || key == SDLK_KP_PLUS) {
+              settings.lookahead_sec += 0.1;
+              if (settings.lookahead_sec > 5.0) settings.lookahead_sec = 5.0;
+              lookahead = settings.lookahead_sec;
+              settings_save(&settings);
+              draw_menu(menu_state, menu_selection, 0, &settings);
+              continue;
+            }
+            if (key == SDLK_MINUS || key == SDLK_UNDERSCORE || key == SDLK_KP_MINUS) {
+              settings.lookahead_sec -= 0.1;
+              if (settings.lookahead_sec < MIN_LOOKAHEAD) settings.lookahead_sec = MIN_LOOKAHEAD;
+              lookahead = settings.lookahead_sec;
+              settings_save(&settings);
               draw_menu(menu_state, menu_selection, 0, &settings);
               continue;
             }
@@ -1385,6 +1255,7 @@ start_game:
           menu_state = MENU_PAUSE;
           menu_selection = 0;
           aud.started = 0;
+          fprintf(stderr, "[audio] paused\n");
           draw_menu(menu_state, menu_selection, 0, &settings);
           continue;
         }
@@ -1405,16 +1276,17 @@ start_game:
 
         uint8_t old_held = held;
         
+        // Map keys to fret bits - invert if inverted_mode is enabled
         if (key == settings.key_fret_green)
-          held |= (1u << 0);
+          held |= settings.inverted_mode ? (1u << 4) : (1u << 0);
         if (key == settings.key_fret_red)
-          held |= (1u << 1);
+          held |= settings.inverted_mode ? (1u << 3) : (1u << 1);
         if (key == settings.key_fret_yellow)
-          held |= (1u << 2);
+          held |= (1u << 2);  // Yellow stays in middle
         if (key == settings.key_fret_blue)
-          held |= (1u << 3);
+          held |= settings.inverted_mode ? (1u << 1) : (1u << 3);
         if (key == settings.key_fret_orange)
-          held |= (1u << 4);
+          held |= settings.inverted_mode ? (1u << 0) : (1u << 4);
 
         // Check for HOPO hit on fret change
         if (held != old_held && cursor < chords.n && chords.v[cursor].is_hopo) {
@@ -1454,8 +1326,7 @@ start_game:
             if (match) {
               st.hit++;
               st.streak++;
-              recent_notes[perf_idx] = 1;
-              perf_idx = (perf_idx + 1) % PERF_WINDOW;
+              consecutive_misses = 0;  // Reset on hit
               update_guitar_volume();
               
               int pts = (ad <= perfect) ? POINTS_PERFECT : (ad <= good ? POINTS_GOOD : POINTS_OK);
@@ -1571,8 +1442,7 @@ start_game:
               if (match) {
                 st.hit++;
                 st.streak++;
-                recent_notes[perf_idx] = 1;
-                perf_idx = (perf_idx + 1) % PERF_WINDOW;
+                consecutive_misses = 0;  // Reset on hit
                 update_guitar_volume();
                 
                 int pts = (ad <= perfect) ? POINTS_PERFECT : (ad <= good ? POINTS_GOOD : POINTS_OK);
@@ -1605,8 +1475,7 @@ start_game:
                 }
                 st.miss++;
                 st.streak = 0;
-                recent_notes[perf_idx] = 0;
-                perf_idx = (perf_idx + 1) % PERF_WINDOW;
+                consecutive_misses++;
                 update_guitar_volume();
                 
                 // Show timing feedback for wrong frets
@@ -1628,16 +1497,17 @@ start_game:
 
       if (e.type == SDL_KEYUP && e.key.repeat == 0) {
         SDL_Keycode key = e.key.keysym.sym;
+        // Invert key mapping on release as well
         if (key == settings.key_fret_green)
-          held &= ~(1u << 0);
+          held &= settings.inverted_mode ? ~(1u << 4) : ~(1u << 0);
         if (key == settings.key_fret_red)
-          held &= ~(1u << 1);
+          held &= settings.inverted_mode ? ~(1u << 3) : ~(1u << 1);
         if (key == settings.key_fret_yellow)
           held &= ~(1u << 2);
         if (key == settings.key_fret_blue)
-          held &= ~(1u << 3);
+          held &= settings.inverted_mode ? ~(1u << 1) : ~(1u << 3);
         if (key == settings.key_fret_orange)
-          held &= ~(1u << 4);
+          held &= settings.inverted_mode ? ~(1u << 0) : ~(1u << 4);
       }
     }
 
@@ -1645,8 +1515,65 @@ start_game:
     double t = audio_time_sec(&aud) + offset_sec;
 
     if (cursor >= chords.n) {
-      if (t > chords.v[chords.n - 1].t_sec + 2.0)
-        break;
+      if (t > chords.v[chords.n - 1].t_sec + 2.0) {
+        // Song finished - show results and wait for user
+        aud.started = 0;
+        if (aud.dev)
+          SDL_CloseAudioDevice(aud.dev);
+        
+        // Display final score
+        clear_screen_hide_cursor();
+        int total_notes = st.hit + st.miss;
+        int accuracy = total_notes > 0 ? (st.hit * 100) / total_notes : 0;
+        
+        printf("\n\n");
+        printf("  ╔════════════════════════════════════════════╗\n");
+        printf("  ║          🎸 SONG COMPLETE! 🎸             ║\n");
+        printf("  ╠════════════════════════════════════════════╣\n");
+        printf("  ║                                            ║\n");
+        printf("  ║  Score:          %6d                   ║\n", st.score);
+        printf("  ║  Notes Hit:      %6d / %-6d          ║\n", st.hit, total_notes);
+        printf("  ║  Accuracy:       %6d%%                  ║\n", accuracy);
+        printf("  ║  Max Streak:     %6d                   ║\n", st.streak);
+        printf("  ║                                            ║\n");
+        printf("  ╚════════════════════════════════════════════╝\n");
+        printf("\n");
+        printf("  Press ENTER to return to song selection...\n");
+        fflush(stdout);
+        
+        // Wait for Enter key using SDL event polling
+        SDL_Event wait_event;
+        int waiting = 1;
+        while (waiting) {
+          while (SDL_PollEvent(&wait_event)) {
+            if (wait_event.type == SDL_KEYDOWN) {
+              if (wait_event.key.keysym.sym == SDLK_RETURN || 
+                  wait_event.key.keysym.sym == SDLK_RETURN2) {
+                waiting = 0;
+                break;
+              }
+            }
+            if (wait_event.type == SDL_QUIT) {
+              waiting = 0;
+              break;
+            }
+          }
+          SDL_Delay(16);  // ~60 FPS
+        }
+        
+        // Cleanup
+        if (window)
+          SDL_DestroyWindow(window);
+        for (int i = 0; i < aud.stem_count; i++)
+          free(aud.stems[i].pcm);
+        free(aud.stems);
+        free(chords.v);
+        free(notes.v);
+        for (int i = 0; i < opus_count; i++)
+          free(opus_paths[i]);
+        
+        goto select_song;
+      }
     }
 
     // Calculate view_cursor to include notes with active sustains
@@ -1675,8 +1602,7 @@ start_game:
         }
         st.miss++;
         st.streak = 0;
-        recent_notes[perf_idx] = 0;
-        perf_idx = (perf_idx + 1) % PERF_WINDOW;
+        consecutive_misses++;
         update_guitar_volume();
         cursor++;
       }
@@ -1694,7 +1620,7 @@ start_game:
 
     if (menu_state == MENU_NONE) {
       draw_frame(&chords, view_cursor, t, lookahead, held, &st,
-                 song_offset_ms, global_offset_ms, selected_track, &track_names, timing_feedback);
+                 song_offset_ms, global_offset_ms, selected_track, &track_names, timing_feedback, settings.inverted_mode);
     }
 
     next += dt;
@@ -1707,6 +1633,7 @@ start_game:
       nanosleep(&ts, NULL);
     } else {
       next = n;
+      // Behind schedule; yield briefly
       usleep(1000);
     }
   }
