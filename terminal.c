@@ -115,14 +115,13 @@ void update_effects(double dt) {
 }
 void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
-                double offset_ms, int selected_track,
+                double song_offset_ms, double global_offset_ms,
+                int selected_track,
                 const TrackNameVec *track_names,
                 const char *timing_feedback) {
   int rows, cols;
   get_term_size(&rows, &cols);
-  int h =
-      rows -
-      6; // Account for: top margin, 3 header lines, 1 empty line, bottom margin
+  int h = rows - 3; // Account for: 1 stats line, 1 empty line, bottom margin
   if (h < 10)
     h = 10;
 
@@ -142,62 +141,18 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     screen[(size_t)r * (size_t)(cols + 1) + (size_t)cols] = '\0';
   }
 
-  // Row 1: Controls line
-  char controlsline[512];
-  snprintf(controlsline, sizeof(controlsline),
-           "Controls: [%c/%c/%c/%c/%c]=frets [%c/%c]=strum [space]=pause "
-           "[+/-]=offset [q/esc]=quit",
-           key_char(KEY_FRET_GREEN), key_char(KEY_FRET_RED),
-           key_char(KEY_FRET_YELLOW), key_char(KEY_FRET_BLUE),
-           key_char(KEY_FRET_ORANGE), key_char(KEY_STRUM_DOWN),
-           key_char(KEY_STRUM_UP));
-  int sl = (int)strlen(controlsline);
-  if (sl > cols)
-    sl = cols;
-  memcpy(screen + 1 * (cols + 1), controlsline, (size_t)sl); // Row 1
-
-  // Row 2: Help line with current track
-  char helpline[512];
-  if (selected_track == -1) {
-    snprintf(helpline, sizeof(helpline),
-             "Track: ALL (0-9 to switch) | Offset: +/- (±10ms) | Quit: q/esc");
-  } else {
-    // Find track name if available
-    const char *track_name = NULL;
-    for (size_t i = 0; i < track_names->n; i++) {
-      if (track_names->v[i].track_num == selected_track) {
-        track_name = track_names->v[i].name;
-        break;
-      }
-    }
-
-    if (track_name && track_name[0] != '\0') {
-      snprintf(helpline, sizeof(helpline),
-               "Track: %s (0-9 to switch) | Offset: +/- (±10ms) | Quit: q/esc",
-               track_name);
-    } else {
-      snprintf(helpline, sizeof(helpline),
-               "Track: %d (0-9 to switch) | Offset: +/- (±10ms) | Quit: q/esc",
-               selected_track);
-    }
-  }
-  int hlen = (int)strlen(helpline);
-  if (hlen > cols)
-    hlen = cols;
-  memcpy(screen + 2 * (cols + 1), helpline, (size_t)hlen); // Row 2
-
-  // Row 3: Stats line (time, offset, score, streak, hit/total)
+  // Row 1: Stats line with both offsets
   int total_notes = st->hit + st->miss;
   char statsline[512];
   snprintf(statsline, sizeof(statsline),
-           "t=%.3fs  offset=%.1fms  score=%d  streak=%d  hit=%d/%d",
-           t, offset_ms, st->score, st->streak, st->hit, total_notes);
+           "t=%.3fs  global_offset=%.1fms  song_offset=%.1fms  score=%d  streak=%d  hit=%d/%d",
+           t, global_offset_ms, song_offset_ms, st->score, st->streak, st->hit, total_notes);
   int hl = (int)strlen(statsline);
   if (hl > cols)
     hl = cols;
-  memcpy(screen + 3 * (cols + 1), statsline, (size_t)hl); // Row 3
+  memcpy(screen + 1 * (cols + 1), statsline, (size_t)hl); // Row 1
 
-  int top_y = 5; // Leave row 4 empty (between header block and lanes)
+  int top_y = 3; // Leave row 2 empty (between stats and lanes)
   int hit_y = top_y + h;
   if (hit_y >= rows - 1) // Just leave bottom row empty
     hit_y = rows - 2;
@@ -215,32 +170,17 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     current_streak = max_streak_for_max_mult;
   
   int filled_height = (bar_height * current_streak) / max_streak_for_max_mult;
+  if (filled_height < 1 && current_streak > 0) filled_height = 1;  // Show at least 1 row if there's any streak
   
   // Draw vertical bar at x=0 and x=1
   for (int y = top_y; y <= hit_y && y < rows; y++) {
     int dy = hit_y - y; // distance from bottom
-    char bar_char = ' ';
-    int bar_lane_code = -20; // Will use for coloring later
+    char bar_char;
     
     if (dy < filled_height) {
-      // Filled portion - color based on which multiplier zone we're in
-      int streak_at_this_height = (dy * max_streak_for_max_mult) / bar_height;
-      int mult_at_height = 1 + streak_at_this_height / STREAK_DIVISOR;
-      
-      bar_char = '#';
-      if (mult_at_height >= 4) {
-        bar_lane_code = -23; // 4x zone - magenta
-      } else if (mult_at_height == 3) {
-        bar_lane_code = -22; // 3x zone - yellow
-      } else if (mult_at_height == 2) {
-        bar_lane_code = -21; // 2x zone - green
-      } else {
-        bar_lane_code = -21; // 1x->2x zone - green
-      }
+      bar_char = '#';  // Filled portion
     } else {
-      // Empty portion
-      bar_char = '.';
-      bar_lane_code = -20; // empty
+      bar_char = '.';  // Empty portion
     }
     
     screen[(size_t)y * (size_t)(cols + 1) + 0] = bar_char;
@@ -271,23 +211,24 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
       colored[8192]; // arbitrary max colored chars (increased for guides)
   int colored_count = 0;
 
-  // Color the streak bar
+  // Color the streak bar - entire bar matches current multiplier color
   for (int y = top_y; y <= hit_y && y < rows; y++) {
-    int dy = hit_y - y;
+    int dy = hit_y - y;  // Distance from bottom
     int bar_lane_code;
     
     if (dy < filled_height) {
-      if (multiplier == 4) {
-        bar_lane_code = -23;
+      // Entire filled bar uses current multiplier color
+      if (multiplier >= 4) {
+        bar_lane_code = -23;  // 4x - yellow
       } else if (multiplier == 3) {
-        bar_lane_code = -22;
+        bar_lane_code = -22;  // 3x - magenta
       } else if (multiplier == 2) {
-        bar_lane_code = -21;
+        bar_lane_code = -21;  // 2x - green
       } else {
-        bar_lane_code = -20;
+        bar_lane_code = -24;  // 1x - blue
       }
     } else {
-      bar_lane_code = -20;
+      bar_lane_code = -20;  // Empty - gray
     }
     
     // Add both x=0 and x=1 positions
@@ -303,7 +244,165 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
     }
   }
 
-  // Fret buttons at hit line - show when frets are pressed
+  // Check for any active effects (to display graphical feedback on sides)
+  int active_effects[5] = {-1, -1, -1, -1, -1};
+  for (int e = 0; e < g_effect_count; e++) {
+    if (g_effects[e].lane >= 0 && g_effects[e].lane < 5) {
+      active_effects[g_effects[e].lane] = g_effects[e].type;
+    }
+  }
+  
+  // Draw graphical feedback on LEFT side of lanes
+  int left_x = x0 - 6;  // 6 chars to the left
+  if (left_x >= 0 && hit_y >= 0 && hit_y < rows) {
+    for (int e = 0; e < g_effect_count; e++) {
+      int effect_type = g_effects[e].type;
+      
+      if (effect_type == 0) {
+        // Miss - X marks and lines
+        if (left_x + 4 < cols) {
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 0)] = 'X';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 1)] = 'X';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 2)] = 'X';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 3)] = 'X';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 4)] = 'X';
+          
+          for (int i = 0; i < 5; i++) {
+            if (colored_count < 8192) {
+              colored[colored_count].lane = -10;  // Miss color
+              colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + i);
+              colored_count++;
+            }
+          }
+        }
+      } else if (effect_type == 3) {
+        // Perfect - burst animation
+        if (left_x + 4 < cols) {
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 0)] = '=';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 1)] = '=';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 2)] = '*';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 3)] = '=';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 4)] = '=';
+          
+          for (int i = 0; i < 5; i++) {
+            if (colored_count < 8192) {
+              colored[colored_count].lane = -13;  // Perfect color
+              colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + i);
+              colored_count++;
+            }
+          }
+        }
+      } else if (effect_type == 2) {
+        // Good - star burst
+        if (left_x + 4 < cols) {
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 0)] = '-';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 1)] = '-';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 2)] = '*';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 3)] = '-';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 4)] = '-';
+          
+          for (int i = 0; i < 5; i++) {
+            if (colored_count < 8192) {
+              colored[colored_count].lane = -12;  // Good color
+              colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + i);
+              colored_count++;
+            }
+          }
+        }
+      } else if (effect_type == 1) {
+        // OK - small burst
+        if (left_x + 4 < cols) {
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 0)] = '.';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 1)] = '.';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 2)] = 'o';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 3)] = '.';
+          screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + 4)] = '.';
+          
+          for (int i = 0; i < 5; i++) {
+            if (colored_count < 8192) {
+              colored[colored_count].lane = -11;  // OK color
+              colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(left_x + i);
+              colored_count++;
+            }
+          }
+        }
+      }
+      break;  // Only show one effect at a time
+    }
+  }
+  
+  // Draw graphical feedback on RIGHT side of lanes
+  int right_x = x0 + grid_w + 2;  // 2 char after lanes
+  if (right_x + 4 < cols && hit_y >= 0 && hit_y < rows) {
+    for (int e = 0; e < g_effect_count; e++) {
+      int effect_type = g_effects[e].type;
+      
+      if (effect_type == 0) {
+        // Miss - X marks
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 0)] = 'X';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 1)] = 'X';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 2)] = 'X';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 3)] = 'X';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 4)] = 'X';
+        
+        for (int i = 0; i < 5; i++) {
+          if (colored_count < 8192) {
+            colored[colored_count].lane = -10;  // Miss color
+            colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + i);
+            colored_count++;
+          }
+        }
+      } else if (effect_type == 3) {
+        // Perfect - burst animation
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 0)] = '=';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 1)] = '=';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 2)] = '*';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 3)] = '=';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 4)] = '=';
+        
+        for (int i = 0; i < 5; i++) {
+          if (colored_count < 8192) {
+            colored[colored_count].lane = -13;  // Perfect color
+            colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + i);
+            colored_count++;
+          }
+        }
+      } else if (effect_type == 2) {
+        // Good - star burst
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 0)] = '-';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 1)] = '-';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 2)] = '*';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 3)] = '-';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 4)] = '-';
+        
+        for (int i = 0; i < 5; i++) {
+          if (colored_count < 8192) {
+            colored[colored_count].lane = -12;  // Good color
+            colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + i);
+            colored_count++;
+          }
+        }
+      } else if (effect_type == 1) {
+        // OK - small burst
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 0)] = '.';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 1)] = '.';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 2)] = 'o';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 3)] = '.';
+        screen[(size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + 4)] = '.';
+        
+        for (int i = 0; i < 5; i++) {
+          if (colored_count < 8192) {
+            colored[colored_count].lane = -11;  // OK color
+            colored[colored_count].pos = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(right_x + i);
+            colored_count++;
+          }
+        }
+      }
+      break;  // Only show one effect at a time
+    }
+  }
+
+  // Fret buttons at hit line - show when frets are pressed (no effects here)
   for (int l = 0; l < lanes; l++) {
     int x = x0 + l * lane_w;
     if (x + 2 < cols && hit_y >= 0 && hit_y < rows) {
@@ -311,29 +410,7 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
       size_t pos1 = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(x + 1);
       size_t pos2 = (size_t)hit_y * (size_t)(cols + 1) + (size_t)(x + 2);
 
-      // Check for active effects on this lane
-      int effect_type = -1;
-      for (int e = 0; e < g_effect_count; e++) {
-        if (g_effects[e].lane == l) {
-          effect_type = g_effects[e].type;
-          break;
-        }
-      }
-
-      if (effect_type >= 0) {
-        // Show effect animation
-        if (effect_type == 0) {
-          // Miss - show X
-          screen[pos0] = '[';
-          screen[pos1] = 'X';
-          screen[pos2] = ']';
-        } else {
-          // Hit - show star/burst based on quality
-          screen[pos0] = (effect_type == 3) ? '{' : '<';
-          screen[pos1] = '*';
-          screen[pos2] = (effect_type == 3) ? '}' : '>';
-        }
-      } else if (held_mask & (1u << l)) {
+      if (held_mask & (1u << l)) {
         // Fret is pressed - show filled button with bright indicator
         screen[pos0] = '<';
         screen[pos1] = 'O'; // Capital O to indicate pressed
@@ -345,30 +422,17 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         screen[pos2] = ']';
       }
 
-      // Store positions for coloring (use special lane values for effects)
+      // Store positions for coloring
       if (colored_count < 8192 - 3) {
-        if (effect_type >= 0) {
-          colored[colored_count].lane =
-              -10 - effect_type; // -10 to -13 for effect types
-        } else {
-          colored[colored_count].lane = l;
-        }
+        colored[colored_count].lane = l;
         colored[colored_count].pos = pos0;
         colored_count++;
 
-        if (effect_type >= 0) {
-          colored[colored_count].lane = -10 - effect_type;
-        } else {
-          colored[colored_count].lane = l;
-        }
+        colored[colored_count].lane = l;
         colored[colored_count].pos = pos1;
         colored_count++;
 
-        if (effect_type >= 0) {
-          colored[colored_count].lane = -10 - effect_type;
-        } else {
-          colored[colored_count].lane = l;
-        }
+        colored[colored_count].lane = l;
         colored[colored_count].pos = pos2;
         colored_count++;
       }
@@ -426,13 +490,22 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
   // notes within lookahead - mark them and store for coloring
   for (size_t k = cursor; k < chords->n; k++) {
     double dt = chords->v[k].t_sec - t;
-    if (dt < -0.3)
+    double duration = chords->v[k].duration_sec;
+    
+    // Check if either the note head OR the sustain end is visible
+    double sustain_end_time = chords->v[k].t_sec + duration;
+    double sustain_dt = sustain_end_time - t;
+    
+    // Skip if note is too far past AND sustain has ended
+    if (dt < -0.3 && sustain_dt < -0.3)
       continue;
-    if (dt > lookahead)
+    // Skip if BOTH note head AND sustain end haven't appeared yet
+    if (dt > lookahead && sustain_dt > lookahead)
       break;
 
     double frac = 1.0 - (dt / lookahead);
     int y = top_y + (int)(frac * (double)(h - 1));
+    // Allow note head to be positioned off-screen above
     if (y < top_y)
       y = top_y;
     if (y > hit_y - 1)
@@ -440,6 +513,61 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
 
     uint8_t m = chords->v[k].mask;
     uint8_t is_hopo = chords->v[k].is_hopo;
+    
+    // Draw sustain trails first (if duration > 0)
+    if (duration > 0.01) {  // Only draw trail if sustain is > 10ms
+      // Draw trail if any part of the sustain is visible
+      // (either note head is visible, or sustain hasn't ended yet)
+      if (sustain_dt >= -0.3) {
+        // Calculate sustain end position (may be off-screen above)
+        double sustain_frac = 1.0 - (sustain_dt / lookahead);
+        int sustain_y = top_y + (int)(sustain_frac * (double)(h - 1));
+        
+        // Clamp sustain end to top of screen if it's beyond lookahead
+        if (sustain_y < top_y)
+          sustain_y = top_y;
+        if (sustain_y > hit_y)
+          sustain_y = hit_y;
+        
+        // Trail goes FROM sustain end (top) TO note head (bottom)
+        // sustain_y is closer to top (smaller), y is closer to bottom (larger)
+        int trail_start = sustain_y;   // Start at sustain end (top)
+        int trail_end = y;              // End at note head (bottom)
+        
+        // If note head hasn't appeared yet (still above screen), end at top
+        if (dt > lookahead) {
+          trail_end = top_y;
+        }
+        // If note head is below hit line, end at hit line
+        else if (y > hit_y) {
+          trail_end = hit_y;
+        }
+        
+        // Draw trail from sustain end down to note head
+        for (int l = 0; l < lanes; l++) {
+          if (m & (1u << l)) {
+            int x = x0 + l * lane_w + 1;  // Center of lane
+            
+            // Draw trail from sustain end (top) to note head (bottom)
+            for (int trail_y = trail_start; trail_y <= trail_end; trail_y++) {
+              if (trail_y >= top_y && trail_y <= hit_y && x >= 0 && x < cols) {
+                size_t trail_pos = (size_t)trail_y * (size_t)(cols + 1) + (size_t)x;
+                screen[trail_pos] = '|';  // Trail character
+                
+                // Color the trail
+                if (colored_count < 8192) {
+                  colored[colored_count].lane = l;
+                  colored[colored_count].pos = trail_pos;
+                  colored_count++;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Draw note heads on top of trails
     for (int l = 0; l < lanes; l++) {
       if (m & (1u << l)) {
         int x = x0 + l * lane_w;
@@ -494,8 +622,8 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         }
       }
 
-      if (lane <= -10) {
-        // Effect coloring
+      if (lane >= -13 && lane <= -10) {
+        // Effect coloring (-10 to -13)
         int effect_type = -10 - lane;
         const char *color;
         if (effect_type == 0) {
@@ -509,17 +637,20 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         }
         printf("%s%c" COLOR_RESET, color, screen[row_start + (size_t)col]);
       } else if (lane == -20) {
-        // Empty streak bar
+        // Empty streak bar - gray
         printf("\x1b[2;37m%c" COLOR_RESET, screen[row_start + (size_t)col]);
+      } else if (lane == -24) {
+        // 1x multiplier - blue
+        printf("\x1b[1;34m%c" COLOR_RESET, screen[row_start + (size_t)col]);
       } else if (lane == -21) {
         // 2x multiplier - green
         printf("\x1b[1;32m%c" COLOR_RESET, screen[row_start + (size_t)col]);
       } else if (lane == -22) {
-        // 3x multiplier - yellow
-        printf("\x1b[1;33m%c" COLOR_RESET, screen[row_start + (size_t)col]);
-      } else if (lane == -23) {
-        // 4x multiplier - magenta
+        // 3x multiplier - magenta
         printf("\x1b[1;35m%c" COLOR_RESET, screen[row_start + (size_t)col]);
+      } else if (lane == -23) {
+        // 4x multiplier - yellow
+        printf("\x1b[1;33m%c" COLOR_RESET, screen[row_start + (size_t)col]);
       } else if (lane >= 0) {
         // Print colored character
         printf("%s%c" COLOR_RESET, lane_color(lane),

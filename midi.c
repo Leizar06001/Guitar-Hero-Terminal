@@ -338,7 +338,8 @@ static void midi_collect_notes_ticks(const uint8_t* data, size_t len, NoteVec* n
               .lane = lane,
               .diff = diff,
               .vel = vel,
-              .track = trk  // Store MIDI track number
+              .track = trk,  // Store MIDI track number
+              .duration_sec = 0.0  // MIDI doesn't track note duration (yet)
             };
             nv_push(notes, ev);
           }
@@ -486,6 +487,7 @@ void build_chords(const NoteVec *notes, int diff, int track, int hopo_threshold_
   uint8_t cur_mask = 0;
   uint64_t cur_tick = tmp[0].tick;
   int cur_min_vel = 127;  // Track minimum velocity in chord
+  double cur_max_duration = 0.0;  // Track maximum duration in chord
   
   uint64_t prev_tick = 0;  // Previous chord tick for HOPO detection
   uint8_t prev_mask = 0;   // Previous chord mask
@@ -495,6 +497,9 @@ void build_chords(const NoteVec *notes, int diff, int track, int hopo_threshold_
       cur_mask |= (uint8_t)(1u << tmp[i].lane);
       if (tmp[i].vel < cur_min_vel) {
         cur_min_vel = tmp[i].vel;
+      }
+      if (tmp[i].duration_sec > cur_max_duration) {
+        cur_max_duration = tmp[i].duration_sec;
       }
     } else {
       // Emit current chord with HOPO detection
@@ -514,7 +519,7 @@ void build_chords(const NoteVec *notes, int diff, int track, int hopo_threshold_
         }
       }
       
-      cv_push(out, (Chord){.t_sec = cur_t, .mask = cur_mask, .is_hopo = is_hopo});
+      cv_push(out, (Chord){.t_sec = cur_t, .mask = cur_mask, .is_hopo = is_hopo, .duration_sec = cur_max_duration});
       
       prev_tick = cur_tick;
       prev_mask = cur_mask;
@@ -522,6 +527,7 @@ void build_chords(const NoteVec *notes, int diff, int track, int hopo_threshold_
       cur_tick = tmp[i].tick;
       cur_mask = (uint8_t)(1u << tmp[i].lane);
       cur_min_vel = tmp[i].vel;
+      cur_max_duration = tmp[i].duration_sec;
     }
   }
   
@@ -535,7 +541,7 @@ void build_chords(const NoteVec *notes, int diff, int track, int hopo_threshold_
       is_hopo = 1;
     }
   }
-  cv_push(out, (Chord){.t_sec = cur_t, .mask = cur_mask, .is_hopo = is_hopo});
+  cv_push(out, (Chord){.t_sec = cur_t, .mask = cur_mask, .is_hopo = is_hopo, .duration_sec = cur_max_duration});
 
   free(tmp);
 }

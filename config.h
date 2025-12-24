@@ -23,7 +23,7 @@
 /* Hit timing windows in seconds */
 #define TIMING_PERFECT 0.030  // 30ms - perfect hit
 #define TIMING_GOOD    0.055  // 55ms - good hit
-#define TIMING_BAD     0.080  // 80ms - acceptable hit
+#define TIMING_BAD     0.100  // 100ms - acceptable hit
 
 /* Points awarded for each timing quality */
 #define POINTS_PERFECT 100
@@ -49,12 +49,6 @@
 #define KEY_STRUM_DOWN   SDLK_RETURN
 #define KEY_STRUM_UP     SDLK_RETURN2
 
-/* Clear/panic button (releases all frets) */
-#define KEY_CLEAR        SDLK_BACKSPACE
-
-/* Pause */
-#define KEY_PAUSE        SDLK_SPACE
-
 /* Offset adjustment */
 #define KEY_OFFSET_INC   SDLK_PLUS
 #define KEY_OFFSET_INC2  SDLK_EQUALS
@@ -71,7 +65,7 @@
 
 /* Game control */
 #define KEY_QUIT         SDLK_q
-#define KEY_QUIT2        SDLK_ESCAPE
+#define KEY_MENU         SDLK_ESCAPE
 #define KEY_START        SDLK_RETURN
 #define KEY_START2       SDLK_RETURN2
 
@@ -164,7 +158,7 @@
 /* SDL window configuration */
 #define SDL_WINDOW_TITLE "midifall - CLICK HERE FOR INPUT"
 #define SDL_WINDOW_WIDTH  400
-#define SDL_WINDOW_HEIGHT 150
+#define SDL_WINDOW_HEIGHT 1
 
 /* Preferred video driver for WSL */
 #define SDL_VIDEO_DRIVER "x11"

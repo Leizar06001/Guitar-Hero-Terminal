@@ -32,6 +32,16 @@ void audio_cb(void *userdata, Uint8 *stream, int len) {
         continue;
       if (s->pos >= s->frames)
         continue;
+      
+      // Very fast gain transition for immediate player feedback
+      if (s->gain < s->target_gain) {
+        s->gain += 0.1f;  // Very fast: ~9 frames = 0.19ms at 48kHz
+        if (s->gain > s->target_gain) s->gain = s->target_gain;
+      } else if (s->gain > s->target_gain) {
+        s->gain -= 0.1f;
+        if (s->gain < s->target_gain) s->gain = s->target_gain;
+      }
+      
       uint64_t idx = s->pos * 2;
       L += s->pcm[idx + 0] * s->gain;
       R += s->pcm[idx + 1] * s->gain;
@@ -144,7 +154,9 @@ void load_opus_file(const char *path, Stem *stem) {
   stem->frames = frames;
   stem->pos = 0;
   stem->gain = 1.0f;
+  stem->target_gain = 1.0f;
   stem->enabled = 1;
+  stem->is_player_track = 0;
 }
 
 void audio_init(AudioEngine *e, int sample_rate) {

@@ -36,7 +36,8 @@ void add_effect(int lane, int type, double duration);
 void update_effects(double dt);
 void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
-                double offset_ms, int selected_track, const TrackNameVec *track_names,
+                double song_offset_ms, double global_offset_ms, 
+                int selected_track, const TrackNameVec *track_names,
                 const char *timing_feedback);
 
 #endif

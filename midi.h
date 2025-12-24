@@ -12,6 +12,7 @@ typedef struct {
   int diff;
   int vel;
   int track;
+  double duration_sec;  // Note duration in seconds (for sustains/trails)
 } NoteOn;
 
 typedef struct {
@@ -33,6 +34,7 @@ typedef struct {
   double t_sec;
   uint8_t mask;
   uint8_t is_hopo;  // 1 if hammer-on/pull-off, 0 if requires strum
+  double duration_sec;  // Longest note duration in the chord (for sustain trail)
 } Chord;
 
 typedef struct {

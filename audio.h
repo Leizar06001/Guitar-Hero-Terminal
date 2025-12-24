@@ -10,7 +10,9 @@ typedef struct {
   uint64_t frames;
   uint64_t pos;
   float gain;
+  float target_gain;  // Target volume for smooth transitions
   int enabled;
+  int is_player_track;  // Flag for guitar/player track
 } Stem;
 
 typedef struct {
