@@ -196,8 +196,8 @@ static int parse_song_ini(const char *ini_path, char *title, char *artist, char 
   }
 
   // print parsed info for debugging
-  printf("> '%s'\nArtist='%s'\nYear='%s'\nDiff_guitar=%d\nLoading_phrase='%s'\n\n",
-		 title, artist, year, *diff_guitar, loading_phrase);
+//   printf("> '%s'\nArtist='%s'\nYear='%s'\nDiff_guitar=%d\nLoading_phrase='%s'\n\n",
+// 		 title, artist, year, *diff_guitar, loading_phrase);
   
   fclose(f);
   return (title[0] != '\0' || artist[0] != '\0');

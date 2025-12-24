@@ -145,7 +145,7 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
   int total_notes = st->hit + st->miss;
   char statsline[512];
   snprintf(statsline, sizeof(statsline),
-           "t=%.3fs  global_offset=%.1fms  song_offset=%.1fms  score=%d  streak=%d  hit=%d/%d",
+           "t=%.3fs  GlobalOffset: %.1fms  SongOffset: %.1fms  Score: \x1b[93m%d\x1b[0m  Streak: %d  Hit: %d/%d",
            t, global_offset_ms, song_offset_ms, st->score, st->streak, st->hit, total_notes);
   int hl = (int)strlen(statsline);
   if (hl > cols)
