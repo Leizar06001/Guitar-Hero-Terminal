@@ -17,6 +17,8 @@ void settings_init_defaults(Settings *s) {
   s->global_offset_ms = DEFAULT_OFFSET;
   s->inverted_mode = 0;
   s->lookahead_sec = DEFAULT_LOOKAHEAD;
+  s->last_difficulty = 3;  // Default to Expert
+  s->last_song_index = 0;  // Default to first song
 }
 
 static const char* get_settings_path(void) {
@@ -64,6 +66,12 @@ void settings_load(Settings *s) {
     } else if (sscanf(line, "lookahead_sec=%lf", &dvalue) == 1) {
       s->lookahead_sec = dvalue;
       if (s->lookahead_sec < MIN_LOOKAHEAD) s->lookahead_sec = MIN_LOOKAHEAD;
+    } else if (sscanf(line, "last_difficulty=%d", &value) == 1) {
+      s->last_difficulty = value;
+      if (s->last_difficulty < 0 || s->last_difficulty > 3) s->last_difficulty = 3;
+    } else if (sscanf(line, "last_song_index=%d", &value) == 1) {
+      s->last_song_index = value;
+      if (s->last_song_index < 0) s->last_song_index = 0;
     }
   }
   
@@ -87,6 +95,8 @@ void settings_save(const Settings *s) {
   fprintf(f, "key_strum=%d\n", s->key_strum);
   fprintf(f, "global_offset_ms=%.1f\n", s->global_offset_ms);
   fprintf(f, "inverted_mode=%d\n", s->inverted_mode);
+  fprintf(f, "last_difficulty=%d\n", s->last_difficulty);
+  fprintf(f, "last_song_index=%d\n", s->last_song_index);
   
   fclose(f);
 }

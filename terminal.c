@@ -72,6 +72,31 @@ void show_cursor(void) { printf("\x1b[?25h\x1b[0m\n"); }
 static Effect g_effects[MAX_EFFECTS];
 static int g_effect_count = 0;
 
+static MultilineEffect g_multiline_effects[MAX_MULTILINE_EFFECTS];
+static int g_multiline_effect_count = 0;
+
+static uint8_t g_sustain_flames = 0;
+
+static const char* EXPLOSION_FRAMES[3][3] = {
+  {" \\|/ ", "-.*.-", " /|\\ "},
+  {"\\   /", " *** ", "/   \\"},
+  {".   .", "  .  ", ".   ."}
+};
+
+static const char* SPARKLE_FRAMES[4][3] = {
+  {"  *  ", " * * ", "  *  "},
+  {" *** ", "*   *", " *** "},
+  {"*   *", "  *  ", "*   *"},
+  {".   .", "  .  ", ".   ."}
+};
+
+static const char* FLAME_FRAMES[4][1] = {
+  {"^"},
+  {"*"},
+  {")"},
+  {"^"}
+};
+
 void add_effect(int lane, int type, double duration) {
   for (int i = 0; i < g_effect_count; i++) {
     if (g_effects[i].lane == lane) {
@@ -102,6 +127,38 @@ void update_effects(double dt) {
   }
   g_effect_count = write_idx;
 }
+
+void add_multiline_effect(int x, int y, int type, double duration, int width, int height) {
+  if (g_multiline_effect_count < MAX_MULTILINE_EFFECTS) {
+    g_multiline_effects[g_multiline_effect_count].x = x;
+    g_multiline_effects[g_multiline_effect_count].y = y;
+    g_multiline_effects[g_multiline_effect_count].type = type;
+    g_multiline_effects[g_multiline_effect_count].time_left = duration;
+    g_multiline_effects[g_multiline_effect_count].time_total = duration;
+    g_multiline_effects[g_multiline_effect_count].width = width;
+    g_multiline_effects[g_multiline_effect_count].height = height;
+    g_multiline_effect_count++;
+  }
+}
+
+void update_multiline_effects(double dt) {
+  int write_idx = 0;
+  for (int read_idx = 0; read_idx < g_multiline_effect_count; read_idx++) {
+    g_multiline_effects[read_idx].time_left -= dt;
+    if (g_multiline_effects[read_idx].time_left > 0) {
+      if (write_idx != read_idx) {
+        g_multiline_effects[write_idx] = g_multiline_effects[read_idx];
+      }
+      write_idx++;
+    }
+  }
+  g_multiline_effect_count = write_idx;
+}
+
+void set_sustain_flames(uint8_t lane_mask) {
+  g_sustain_flames = lane_mask;
+}
+
 void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
                 double song_offset_ms, double global_offset_ms,
@@ -579,6 +636,121 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
             colored[colored_count].pos = row_pos + (size_t)(x + i);
             colored_count++;
           }
+        }
+      }
+    }
+  }
+
+  // Draw multiline effects AFTER all gameplay elements but BEFORE color blit
+  for (int e = 0; e < g_multiline_effect_count; e++) {
+    MultilineEffect *effect = &g_multiline_effects[e];
+    double progress = 1.0 - (effect->time_left / effect->time_total);
+    
+    const char **frames = NULL;
+    int num_frames = 0;
+    int color_code = -13; // Default to perfect color
+    
+    if (effect->type == MULTILINE_EFFECT_EXPLOSION) {
+      frames = (const char **)EXPLOSION_FRAMES;
+      num_frames = 3;
+      color_code = -12; // Good color (yellow/green)
+    } else if (effect->type == MULTILINE_EFFECT_SPARKLE) {
+      frames = (const char **)SPARKLE_FRAMES;
+      num_frames = 4;
+      color_code = -13; // Perfect color (yellow)
+    } else if (effect->type == MULTILINE_EFFECT_FLAME) {
+      frames = (const char **)FLAME_FRAMES;
+      num_frames = 4;
+      color_code = -12; // Orange/yellow flame color
+    }
+    
+    if (frames && num_frames > 0) {
+      int frame = (int)(progress * num_frames);
+      if (frame >= num_frames) frame = num_frames - 1;
+      
+      for (int dy = 0; dy < effect->height && dy < 3; dy++) {
+        int screen_y = effect->y + dy;
+        if (screen_y < top_y || screen_y >= rows) continue;
+        
+        const char *frame_line = frames[frame * 3 + dy];
+        int frame_len = (int)strlen(frame_line);
+        if (frame_len > effect->width) frame_len = effect->width;
+        
+        for (int dx = 0; dx < frame_len; dx++) {
+          int screen_x = effect->x + dx;
+          if (screen_x < 0 || screen_x >= cols) continue;
+          
+          char ch = frame_line[dx];
+          if (ch != ' ') {
+            size_t pos = (size_t)screen_y * (size_t)(cols + 1) + (size_t)screen_x;
+            screen[pos] = ch;
+            
+            if (colored_count < 8192) {
+              colored[colored_count].lane = color_code;
+              colored[colored_count].pos = pos;
+              colored_count++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Draw sustain flames on both sides of lanes when holding long notes
+  if (g_sustain_flames) {
+    // Calculate flame drawing area (from ~75% down to hit line)
+    int flame_start_y = hit_y - (h * 3 / 4);  // Start 75% up from hit line
+    int flame_end_y = hit_y - 2;               // End 2 rows above hit line
+    
+    if (flame_start_y < top_y) flame_start_y = top_y;
+    if (flame_end_y > hit_y) flame_end_y = hit_y;
+    
+    // Use time for flame animation cycle
+    static double flame_time = 0.0;
+    flame_time += 0.016;  // Approximate 60fps
+    int flame_frame = ((int)(flame_time * 10)) % 4;  // Cycle through 4 frames quickly
+    
+    for (int l = 0; l < lanes; l++) {
+      if (g_sustain_flames & (1u << l)) {
+        int display_lane = invert_lane(l);
+        int lane_x = x0 + display_lane * lane_w;
+        
+        // Left side flames
+        int left_flame_x = lane_x - 0;
+        // Right side flames
+        // int right_flame_x = lane_x + lane_w + 1;
+        
+        // Draw vertical flames with staggered animation
+        for (int y = flame_start_y; y <= flame_end_y; y++) {
+          if (y < 0 || y >= rows) continue;
+          
+          // Offset frame by row for staggered effect
+          int row_frame = (flame_frame + (y - flame_start_y)) % 4;
+          char flame_char = FLAME_FRAMES[row_frame][0][0];
+          
+          // Left flame
+          if (left_flame_x >= 0 && left_flame_x < cols) {
+            size_t pos = (size_t)y * (size_t)(cols + 1) + (size_t)left_flame_x;
+            screen[pos] = flame_char;
+            
+            if (colored_count < 8192) {
+              colored[colored_count].lane = l;  // Use lane color
+              colored[colored_count].pos = pos;
+              colored_count++;
+            }
+          }
+          
+          // Right flame
+        //   if (right_flame_x >= 0 && right_flame_x < cols) {
+        //     size_t pos = (size_t)y * (size_t)(cols + 1) + (size_t)right_flame_x;
+        //     screen[pos] = flame_char;
+            
+        //     if (colored_count < 8192) {
+        //       colored[colored_count].lane = l;  // Use lane color
+        //       colored[colored_count].pos = pos;
+        //       colored_count++;
+        //     }
+        //   }
         }
       }
     }

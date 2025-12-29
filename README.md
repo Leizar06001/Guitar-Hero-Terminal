@@ -53,7 +53,7 @@ make clean && make
 
 ### Run
 ```bash
-./midifall Songs/
+./gh_terminal
 ```
 
 ## Getting Songs

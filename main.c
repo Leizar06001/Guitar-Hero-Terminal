@@ -341,7 +341,11 @@ static int scan_songs_directory(const char *songs_dir, SongEntry **out_songs) {
 
 // Display song selector and return selected index (-1 if quit)
 static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
-  int selected = 0;
+  // Use last selected song as default (clamped to valid range)
+  int selected = settings->last_song_index;
+  if (selected < 0 || selected >= count) {
+    selected = 0;
+  }
   int menu_mode = 0;  // 0 = songs, 1 = options
   int option_selection = 0;
   int waiting_for_key = 0;
@@ -598,6 +602,9 @@ static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
       // else: some other character after ESC, ignore
     } else if (c == '\n' || c == '\r') {  // Enter
       tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+      // Save selected song index
+      settings->last_song_index = selected;
+      settings_save(settings);
       return selected;
     } else if (c == 'o' || c == 'O') {  // Options
       menu_mode = 1;
@@ -610,11 +617,45 @@ static int show_song_selector(SongEntry *songs, int count, Settings *settings) {
   }
 }
 
+// Check which difficulties have notes available
+static void check_available_difficulties(const NoteVec *notes, int *available) {
+  // Initialize all as unavailable
+  for (int i = 0; i < 4; i++) {
+    available[i] = 0;
+  }
+  
+  // Scan notes to see which difficulties exist
+  for (size_t i = 0; i < notes->n; i++) {
+    int diff = notes->v[i].diff;
+    if (diff >= 0 && diff < 4) {
+      available[diff] = 1;
+    }
+  }
+}
+
 // Display difficulty selector and return selected difficulty (-1 if back, -2 if quit)
-static int show_difficulty_selector(void) {
+static int show_difficulty_selector(const int *available, Settings *settings) {
   const char *difficulties[] = {"Easy", "Medium", "Hard", "Expert"};
   const char *colors[] = {"\x1b[1;32m", "\x1b[1;33m", "\x1b[1;31m", "\x1b[1;35m"};  // Green, Yellow, Red, Magenta
-  int selected = 3;  // Default to Expert
+  const char *gray_color = "\x1b[2;37m";  // Dim gray for unavailable
+  
+  // Try to use last selected difficulty if available, otherwise find first available
+  int selected = settings->last_difficulty;
+  if (selected < 0 || selected > 3 || !available[selected]) {
+    // Last difficulty not available, find first available
+    selected = -1;
+    for (int i = 3; i >= 0; i--) {  // Check from expert down
+      if (available[i]) {
+        selected = i;
+        break;
+      }
+    }
+    
+    if (selected == -1) {
+      // No difficulties available - shouldn't happen but handle it
+      selected = 3;
+    }
+  }
   
   // Flush stdin and clear any error state
   tcflush(STDIN_FILENO, TCIFLUSH);
@@ -639,10 +680,13 @@ static int show_difficulty_selector(void) {
     
     for (int i = 0; i < 4; i++) {
       printf("\x1b[1;36m║\x1b[0m");
+      
+      const char *display_color = available[i] ? colors[i] : gray_color;
+      
       if (i == selected) {
-        printf("                             \x1b[1;33m► %s%-8s\x1b[0m ◄", colors[i], difficulties[i]);
+        printf("                             \x1b[1;33m► %s%-8s\x1b[0m ◄", display_color, difficulties[i]);
       } else {
-        printf("                               %s%-8s\x1b[0m", colors[i], difficulties[i]);
+        printf("                               %s%-8s\x1b[0m", display_color, difficulties[i]);
       }
       printf("\x1b[78G\x1b[1;36m║\x1b[0m\n");
     }
@@ -670,9 +714,19 @@ static int show_difficulty_selector(void) {
       if (next == '[') {  // Arrow key sequence
         char arrow = getchar();
         if (arrow == 'A') {  // Up arrow
-          selected = (selected > 0) ? selected - 1 : 3;
+          // Move up, skip unavailable difficulties
+          int new_selected = selected;
+          do {
+            new_selected = (new_selected > 0) ? new_selected - 1 : 3;
+          } while (!available[new_selected] && new_selected != selected);
+          selected = new_selected;
         } else if (arrow == 'B') {  // Down arrow
-          selected = (selected < 3) ? selected + 1 : 0;
+          // Move down, skip unavailable difficulties
+          int new_selected = selected;
+          do {
+            new_selected = (new_selected < 3) ? new_selected + 1 : 0;
+          } while (!available[new_selected] && new_selected != selected);
+          selected = new_selected;
         }
       } else if (next == EOF) {
         // Timeout - just ESC - go back to song selection
@@ -681,8 +735,15 @@ static int show_difficulty_selector(void) {
       }
       // else: some other character after ESC, ignore
     } else if (c == '\n' || c == '\r') {  // Enter
-      tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
-      return selected;
+      // Only allow selection if difficulty is available
+      if (available[selected]) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+        // Save selected difficulty
+        settings->last_difficulty = selected;
+        settings_save(settings);
+        return selected;
+      }
+      // Otherwise ignore the enter key (don't select unavailable difficulty)
     } else if (c == 'q' || c == 'Q') {  // Q to quit app
       tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
       return -2;
@@ -776,24 +837,115 @@ select_song:
     return 0;  // User quit
   }
   
+  // Parse notes file early to check available difficulties
+  char notes_path[4096];
+  int is_chart = 0;
+  
+  // Check for notes.chart first, then notes.mid
+  snprintf(notes_path, sizeof(notes_path), "%s/notes.chart", songs[selected].path);
+  if (access(notes_path, R_OK) == 0) {
+    is_chart = 1;
+  } else {
+    snprintf(notes_path, sizeof(notes_path), "%s/notes.mid", songs[selected].path);
+    if (access(notes_path, R_OK) != 0) {
+      fprintf(stderr, "No notes.mid or notes.chart file found in %s\n", songs[selected].path);
+      free(songs);
+      return 1;
+    }
+  }
+  
+  NoteVec notes = {0};
+  TrackNameVec track_names = {0};
+  
+  if (is_chart) {
+    fprintf(stderr, "Parsing .chart file: %s\n", notes_path);
+    if (chart_parse(notes_path, &notes, &track_names) != 0) {
+      fprintf(stderr, "Failed to parse .chart file\n");
+      free(songs);
+      return 1;
+    }
+  } else {
+    fprintf(stderr, "Parsing MIDI: %s\n", notes_path);
+    midi_parse(notes_path, &notes, &track_names);
+  }
+  
+  if (notes.n == 0) {
+    fprintf(stderr, "No notes found in notes file.\n");
+    free(notes.v);
+    free(track_names.v);
+    free(songs);
+    return 1;
+  }
+  
+  // Check which difficulties are available
+  int available_diffs[4] = {0};
+  check_available_difficulties(&notes, available_diffs);
+  
   // Show difficulty selector (loop back if user presses ESC)
   int diff_choice;
   while (1) {
-    diff_choice = show_difficulty_selector();
+    diff_choice = show_difficulty_selector(available_diffs, &settings);
     
     if (diff_choice == -2) {
       // User pressed Q - quit app
+      free(notes.v);
+      free(track_names.v);
       free(songs);
       return 0;
     }
     
     if (diff_choice == -1) {
       // User pressed ESC - go back to song selector
+      // Clean up current notes
+      free(notes.v);
+      free(track_names.v);
+      notes.v = NULL;
+      notes.n = notes.cap = 0;
+      track_names.v = NULL;
+      track_names.n = track_names.cap = 0;
+      
       selected = show_song_selector(songs, song_count, &settings);
       if (selected < 0) {
         free(songs);
         return 0;  // User quit from song selector
       }
+      
+      // Re-parse notes for new song
+      snprintf(notes_path, sizeof(notes_path), "%s/notes.chart", songs[selected].path);
+      if (access(notes_path, R_OK) == 0) {
+        is_chart = 1;
+      } else {
+        snprintf(notes_path, sizeof(notes_path), "%s/notes.mid", songs[selected].path);
+        if (access(notes_path, R_OK) != 0) {
+          fprintf(stderr, "No notes.mid or notes.chart file found in %s\n", songs[selected].path);
+          free(songs);
+          return 1;
+        }
+        is_chart = 0;
+      }
+      
+      if (is_chart) {
+        fprintf(stderr, "Parsing .chart file: %s\n", notes_path);
+        if (chart_parse(notes_path, &notes, &track_names) != 0) {
+          fprintf(stderr, "Failed to parse .chart file\n");
+          free(songs);
+          return 1;
+        }
+      } else {
+        fprintf(stderr, "Parsing MIDI: %s\n", notes_path);
+        midi_parse(notes_path, &notes, &track_names);
+      }
+      
+      if (notes.n == 0) {
+        fprintf(stderr, "No notes found in notes file.\n");
+        free(notes.v);
+        free(track_names.v);
+        free(songs);
+        return 1;
+      }
+      
+      // Re-check available difficulties
+      check_available_difficulties(&notes, available_diffs);
       continue;  // Try difficulty selection again
     }
     break;  // Valid difficulty selected
@@ -813,7 +965,7 @@ select_song:
   free(songs);  // Done with songs list
   
   // Prefer WSLg backends: Wayland video, PulseAudio audio
-  SDL_setenv("SDL_VIDEODRIVER", SDL_VIDEO_DRIVER, 1);
+//   SDL_setenv("SDL_VIDEODRIVER", SDL_VIDEO_DRIVER, 1);
   SDL_setenv("SDL_AUDIODRIVER", "pulse", 1);
   
   if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
@@ -822,6 +974,13 @@ select_song:
     return 1;
   }
   atexit(SDL_Quit);
+
+	const char *driver = SDL_GetCurrentAudioDriver();
+	if (driver) {
+		printf("SDL audio driver in use: %s\n", driver);
+	} else {
+		printf("No audio driver initialized\n");
+	}
 
   fprintf(stderr, "Creating SDL window for input...\n");
   
@@ -851,25 +1010,11 @@ select_song:
     SDL_RenderPresent(renderer);
   }
 
-  // Load song files from selected folder
-  char notes_path[4096];
+  // Load song files from selected folder (opus files)
   char *opus_paths[16];
   int opus_count = 0;
-  int is_chart = 0;
   
-  // Check for notes.chart first, then notes.mid
-  snprintf(notes_path, sizeof(notes_path), "%s/notes.chart", song_path);
-  if (access(notes_path, R_OK) == 0) {
-    is_chart = 1;
-  } else {
-    snprintf(notes_path, sizeof(notes_path), "%s/notes.mid", song_path);
-    if (access(notes_path, R_OK) != 0) {
-      fprintf(stderr, "No notes.mid or notes.chart file found in %s\n", song_path);
-      return 1;
-    }
-  }
-  
-  // Scan for opus files only (we already know notes path)
+  // Scan for opus files
   DIR *dir = opendir(song_path);
   if (dir) {
     struct dirent *entry;
@@ -895,24 +1040,7 @@ select_song:
     fprintf(stderr, "\n\x1b[1;36m%s\x1b[0m\n\n", loading_phrase);
   }
 
-  NoteVec notes = {0};
-  TrackNameVec track_names = {0};
-  
-  if (is_chart) {
-    fprintf(stderr, "Parsing .chart file: %s\n", notes_path);
-    if (chart_parse(notes_path, &notes, &track_names) != 0) {
-      fprintf(stderr, "Failed to parse .chart file\n");
-      return 1;
-    }
-  } else {
-    fprintf(stderr, "Parsing MIDI: %s\n", notes_path);
-    midi_parse(notes_path, &notes, &track_names);
-  }
-  
-  if (notes.n == 0) {
-    fprintf(stderr, "No notes found in notes file.\n");
-    return 1;
-  }
+  // Notes already parsed earlier, no need to re-parse
 
   int diff = parse_diff(diff_str);
   if (diff < 0) {
@@ -1035,6 +1163,13 @@ start_game:
   double feedback_timer = 0.0;
 
   size_t cursor = 0;
+  size_t sustain_cursor = 0;  // Track which notes have sustains being held
+  uint8_t active_sustains = 0;  // Bitmask of lanes with active sustains
+
+  // Celebration effects when at max multiplier
+  int was_at_max_multiplier = 0;
+  double next_celebration_time = 0.0;
+  double celebration_cooldown = 0.0;
 
   const double fps = TARGET_FPS;
   const double dt = 1.0 / fps;
@@ -1609,6 +1744,107 @@ start_game:
     }
 
     update_effects(dt);
+    update_multiline_effects(dt);
+    
+    // Track active sustains - check if currently held notes have sustains
+    active_sustains = 0;
+    if (menu_state == MENU_NONE) {
+      // Look at notes around cursor to find active sustains
+      for (size_t i = sustain_cursor; i < chords.n && i < cursor + 5; i++) {
+        double note_time = chords.v[i].t_sec;
+        double note_end = note_time + chords.v[i].duration_sec;
+        
+        // Check if this note's sustain is currently active
+        if (note_time <= t && t <= note_end && chords.v[i].duration_sec > 0.1) {
+          // Check if the player is holding the correct frets
+          uint8_t note_mask = chords.v[i].mask;
+          if ((held & note_mask) == note_mask) {
+            active_sustains |= note_mask;
+          }
+        }
+        
+        // Clean up old sustain tracking
+        if (note_end < t - 1.0 && i >= sustain_cursor) {
+          sustain_cursor = i + 1;
+        }
+      }
+    }
+    set_sustain_flames(active_sustains);
+    
+    // Celebration effects - start at half bar, intensify as bar fills
+    if (menu_state == MENU_NONE) {
+      int max_streak_for_max_mult = (MAX_MULTIPLIER - 1) * STREAK_DIVISOR;
+      int half_streak = max_streak_for_max_mult / 2;
+      int celebration_active = (st.streak >= half_streak);
+      
+      // Just reached half bar - initialize celebration timer
+      if (celebration_active && !was_at_max_multiplier) {
+        // Calculate initial cooldown based on current streak position
+        double progress = (double)(st.streak - half_streak) / (double)(max_streak_for_max_mult - half_streak);
+        if (progress > 1.0) progress = 1.0;
+        
+        // Cooldown scales from 2.0s (at half) to 0.3s (at max): 2.0 - (progress * 1.7)
+        double base_cooldown = 2.0 - (progress * 1.7);
+        // Add small random variance (±10%)
+        celebration_cooldown = base_cooldown * (0.9 + ((double)rand() / RAND_MAX) * 0.2);
+        next_celebration_time = t + celebration_cooldown;
+      }
+      
+      // Spawn celebration effects periodically while above half bar
+      if (celebration_active && t >= next_celebration_time) {
+        // Get terminal size for safe spawn zones
+        int rows, cols;
+        get_term_size(&rows, &cols);
+        
+        const int lanes = 5;
+        const int lane_w = NOTE_WIDTH;
+        int grid_w = lanes * lane_w;
+        int x0 = (cols - grid_w) / 2;
+        int top_y = 3;
+        int hit_y = top_y + (rows - 3 - 10 < 10 ? 10 : rows - 3);
+        
+        // Define safe zones (avoid lanes and permanent UI)
+        int left_zone_x = 5;  // Left of streak bar
+        int right_zone_x = x0 + grid_w + 15;  // Right of lanes
+        int safe_y_min = top_y;
+        int safe_y_max = hit_y - 5;
+        
+        // Random effect type: 100 (explosion) or 101 (sparkle)
+        int effect_type = (rand() % 2) + 100;
+        
+        // Random position in safe zones
+        int use_right_zone = rand() % 2;  // 50% chance left or right
+        int spawn_x, spawn_y;
+        
+        if (use_right_zone && right_zone_x + 5 < cols) {
+          // Right zone (after lanes)
+          spawn_x = right_zone_x + (rand() % (cols - right_zone_x - 5));
+        } else if (left_zone_x + 5 < x0) {
+          // Left zone (before lanes but after streak bar)
+          spawn_x = left_zone_x + (rand() % (x0 - left_zone_x - 5));
+        } else {
+          // Fallback: just use a safe spot
+          spawn_x = cols / 4;
+        }
+        
+        spawn_y = safe_y_min + (rand() % (safe_y_max - safe_y_min + 1));
+        
+        // Spawn the effect
+        add_multiline_effect(spawn_x, spawn_y, effect_type, 0.5, 5, 3);
+        
+        // Calculate next cooldown based on current streak position
+        double progress = (double)(st.streak - half_streak) / (double)(max_streak_for_max_mult - half_streak);
+        if (progress > 1.0) progress = 1.0;
+        
+        // Cooldown scales from 2.0s (at half) to 0.3s (at max): 2.0 - (progress * 1.7)
+        double base_cooldown = 2.0 - (progress * 1.7);
+        // Add small random variance (±10%)
+        celebration_cooldown = base_cooldown * (0.9 + ((double)rand() / RAND_MAX) * 0.2);
+        next_celebration_time = t + celebration_cooldown;
+      }
+      
+      was_at_max_multiplier = celebration_active;
+    }
     
     // Update timing feedback timer
     if (feedback_timer > 0) {

@@ -93,6 +93,7 @@
 
 /* Maximum concurrent visual effects */
 #define MAX_EFFECTS 32
+#define MAX_MULTILINE_EFFECTS 16
 
 /* Effect duration in seconds */
 #define EFFECT_DURATION_HIT  0.2
@@ -103,6 +104,11 @@
 #define EFFECT_TYPE_OK      1
 #define EFFECT_TYPE_GOOD    2
 #define EFFECT_TYPE_PERFECT 3
+
+/* Multiline effect types (start at 100 to avoid conflicts) */
+#define MULTILINE_EFFECT_EXPLOSION 100
+#define MULTILINE_EFFECT_SPARKLE   101
+#define MULTILINE_EFFECT_FLAME     102
 
 /* ==================== Display Configuration ==================== */
 

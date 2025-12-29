@@ -13,6 +13,8 @@ typedef struct {
   double global_offset_ms;  // Global offset for all songs
   int inverted_mode;  // Invert high/low notes and keys
   double lookahead_sec;  // How far ahead notes are visible (in seconds)
+  int last_difficulty;  // Last selected difficulty (0-3)
+  int last_song_index;  // Last selected song index in list
 } Settings;
 
 void settings_load(Settings *s);

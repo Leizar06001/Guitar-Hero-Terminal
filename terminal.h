@@ -24,6 +24,16 @@ typedef struct {
   int type;
 } Effect;
 
+typedef struct {
+  double time_left;
+  double time_total;
+  int x;
+  int y;
+  int type;
+  int width;
+  int height;
+} MultilineEffect;
+
 const char* lane_color(int lane);
 void term_raw_on(void);
 void term_raw_off(void);
@@ -34,6 +44,9 @@ void show_cursor(void);
 
 void add_effect(int lane, int type, double duration);
 void update_effects(double dt);
+void add_multiline_effect(int x, int y, int type, double duration, int width, int height);
+void update_multiline_effects(double dt);
+void set_sustain_flames(uint8_t lane_mask);
 void draw_frame(const ChordVec *chords, size_t cursor, double t,
                 double lookahead, uint8_t held_mask, const Stats *st,
                 double song_offset_ms, double global_offset_ms, 

@@ -1,12 +1,13 @@
+TARGET=gh_terminal
 CC=gcc
 CFLAGS=-O2 -Wall -Wextra -std=c11 -I. $(shell pkg-config --cflags sdl2 opusfile)
 LDLIBS=$(shell pkg-config --libs sdl2 opusfile)
 
 OBJS=main.o midi.o audio.o terminal.o settings.o chart.o
 
-all: midifall
+all: $(TARGET)
 
-midifall: $(OBJS)
+$(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
 main.o: main.c config.h audio.h midi.h terminal.h settings.h
@@ -28,6 +29,6 @@ chart.o: chart.c chart.h midi.h
 	$(CC) $(CFLAGS) -c chart.c -o chart.o
 
 clean:
-	rm -f midifall $(OBJS)
+	rm -f $(TARGET) $(OBJS)
 
 .PHONY: all clean
