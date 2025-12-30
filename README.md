@@ -2,7 +2,7 @@
 
 A terminal-based rhythm game similar to Guitar Hero that plays MIDI or .chart files synchronized with audio.
 
-<img src="https://github.com/Leizar06001/Guitar-Hero-Terminal/blob/865203f577b9dcee0f0f1ae1412cf0aa6d08dc89/gh1.png" width="460"/><img src="https://github.com/Leizar06001/Guitar-Hero-Terminal/blob/865203f577b9dcee0f0f1ae1412cf0aa6d08dc89/gh2.png" width="460"/>
+<img src="https://github.com/Leizar06001/Guitar-Hero-Terminal/blob/865203f577b9dcee0f0f1ae1412cf0aa6d08dc89/gh1.png" width="400"/><img src="https://github.com/Leizar06001/Guitar-Hero-Terminal/blob/865203f577b9dcee0f0f1ae1412cf0aa6d08dc89/gh2.png" width="400"/>
 
 ## Features
 
