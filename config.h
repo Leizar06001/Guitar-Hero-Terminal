@@ -8,6 +8,9 @@
 /* Default timing offset in milliseconds (negative = notes appear earlier) */
 #define DEFAULT_OFFSET -360
 
+/* Default inverted mode (0 = normal, 1 = inverted) */
+#define DEFAULT_INVERTED 1
+
 /* Default difficulty level */
 #define DEFAULT_DIFFICULTY "expert"
 

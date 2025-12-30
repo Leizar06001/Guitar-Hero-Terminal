@@ -718,7 +718,7 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         // Left side flames
         int left_flame_x = lane_x - 0;
         // Right side flames
-        // int right_flame_x = lane_x + lane_w + 1;
+        int right_flame_x = lane_x + lane_w - 1;
         
         // Draw vertical flames with staggered animation
         for (int y = flame_start_y; y <= flame_end_y; y++) {
@@ -741,16 +741,16 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
           }
           
           // Right flame
-        //   if (right_flame_x >= 0 && right_flame_x < cols) {
-        //     size_t pos = (size_t)y * (size_t)(cols + 1) + (size_t)right_flame_x;
-        //     screen[pos] = flame_char;
+          if (right_flame_x >= 0 && right_flame_x < cols) {
+            size_t pos = (size_t)y * (size_t)(cols + 1) + (size_t)right_flame_x;
+            screen[pos] = flame_char;
             
-        //     if (colored_count < 8192) {
-        //       colored[colored_count].lane = l;  // Use lane color
-        //       colored[colored_count].pos = pos;
-        //       colored_count++;
-        //     }
-        //   }
+            if (colored_count < 8192) {
+              colored[colored_count].lane = l;  // Use lane color
+              colored[colored_count].pos = pos;
+              colored_count++;
+            }
+          }
         }
       }
     }

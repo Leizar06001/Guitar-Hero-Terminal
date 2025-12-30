@@ -15,7 +15,7 @@ void settings_init_defaults(Settings *s) {
   s->key_fret_orange = KEY_FRET_ORANGE;
   s->key_strum = KEY_STRUM_DOWN;
   s->global_offset_ms = DEFAULT_OFFSET;
-  s->inverted_mode = 0;
+  s->inverted_mode = DEFAULT_INVERTED;
   s->lookahead_sec = DEFAULT_LOOKAHEAD;
   s->last_difficulty = 3;  // Default to Expert
   s->last_song_index = 0;  // Default to first song
