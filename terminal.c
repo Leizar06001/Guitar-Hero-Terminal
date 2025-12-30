@@ -615,11 +615,11 @@ void draw_frame(const ChordVec *chords, size_t cursor, double t,
         if (x + lane_w - 1 < cols && y >= 0 && y < rows) {
           size_t row_pos = (size_t)y * (size_t)(cols + 1);
           
-          // HOPO notes use <*> instead of [#]
+          // HOPO notes use <-> instead of [#]
           if (is_hopo) {
             screen[row_pos + (size_t)x] = '<';
             for (int i = 1; i < lane_w - 1; i++) {
-              screen[row_pos + (size_t)(x + i)] = '*';
+              screen[row_pos + (size_t)(x + i)] = '-';
             }
             screen[row_pos + (size_t)(x + lane_w - 1)] = '>';
           } else {
